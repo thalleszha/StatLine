@@ -26,6 +26,7 @@ classifiers = [
   "Environment :: Console"
 ]
 # Core lib keeps zero hard deps to stay embed-friendly.
+
 dependencies = []
 
 [project.optional-dependencies]
