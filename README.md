@@ -11,7 +11,7 @@ StatLine is a weighted player scoring and analytics framework designed to normal
 - Free to use, adapt, and extend under the MIT License.
 - Any public use of the StatLine name or branding requires express written consent.
 - Enhancements or forks must be contributed back to the main project if distributed publicly.
-- The StatLine name, logo, and brand identity are not licensed under MIT and remain exclusive to StatLine LLC.
+- The StatLine name, logo, and brand identity are not licensed under GNU Affero General Public License License and remain exclusive to StatLine LLC.
 
 ## Install
 ```bash
