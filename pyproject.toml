@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 keywords = ["basketball", "analytics", "mvp", "efg", "discord", "google-sheets"]
-authors = [{ name = "Your Name" }]
+authors = [{ name = "StatLine" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -55,9 +55,9 @@ discord = [
 statline = "statline.io.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourname/statline"
-Repository = "https://github.com/yourname/statline"
-Issues = "https://github.com/yourname/statline/issues"
+Homepage = "https://github.com/amillolive/statline"
+Repository = "https://github.com/amillolive/statline"
+Issues = "https://github.com/amillolive/statline/issues"
 
 [tool.ruff]
 line-length = 100
