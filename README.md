@@ -17,13 +17,3 @@ StatLine is a weighted player scoring and analytics framework designed to normal
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-## Development
-Optional extras:
-```bash
-pip install -e ".[dev,sheets,discord]"
-```
-
-## Trademark Notice
-"StatLine" is a trademark of StatLine LLC (in formation), trademark registration pending.
