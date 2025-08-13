@@ -2,7 +2,7 @@
 StatLine™ — Weighted player scoring for awards and analysis.
 
 "StatLine" is a trademark of StatLine LLC (in formation), trademark registration pending.  
-This software is licensed under the MIT License (see LICENSE).
+This software is licensed under the GNU Affero General Public License License (see LICENSE).
 
 ## What is StatLine?
 StatLine is a weighted player scoring and analytics framework designed to normalize and evaluate player performance using dynamic metrics. It can power standalone scripts, integrations, and bots (e.g., Orion — a Discord interface for StatLine).
