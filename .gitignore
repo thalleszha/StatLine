@@ -1,0 +1,62 @@
+
+# .gitignore
+```gitignore
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+.build/
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.conda/
+.pyenv/
+.python-version
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.cache/
+.nox/
+.tox/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+secrets/
+secrets/*
+!secrets/.gitkeep
+
+# Local data/state
+max_stats.json
+max_stats.local.json
+data/*.sqlite
+data/*.db
+*.log
+
+# Hatch / packaging
+*.egg
+MANIFEST

@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "statline"
+version = "0.1.0"
+description = "StatLine — weighted player scoring, efficiency modeling, and Discord tooling"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["basketball", "analytics", "mvp", "efg", "discord", "google-sheets"]
+authors = [{ name = "Your Name" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Environment :: Console"
+]
+# Core lib keeps zero hard deps to stay embed-friendly.
+dependencies = []
+
+[project.optional-dependencies]
+# Enable Google Sheets ingestion.
+sheets = [
+  "gspread>=6.0.0",
+  "google-auth>=2.0.0",
+]
+# Dev & QA
+dev = [
+  "pytest>=7.0",
+  "ruff>=0.5",
+  "mypy>=1.6",
+  "coverage>=7.2",
+]
+# Discord bot runtime
+discord = [
+  "hikari>=2.0.0.dev121",
+  "hikari-lightbulb>=2.3.3",
+  "aiohttp>=3.8",
+  "python-dotenv>=1.0.1",  # optional: local .env workflow
+]
+
+[project.scripts]
+# CLI entrypoint (interactive and batch modes)
+statline = "statline.io.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourname/statline"
+Repository = "https://github.com/yourname/statline"
+Issues = "https://github.com/yourname/statline/issues"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-select = ["I"]  # isort
+src = ["statline", "tests"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_configs = true
+disallow_untyped_defs = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["statline"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "statline",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml"
+]
