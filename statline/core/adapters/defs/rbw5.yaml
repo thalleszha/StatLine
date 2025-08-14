@@ -1,0 +1,42 @@
+key: rbw5
+version: 0.1.0
+aliases: [rb-world-5, rb5]
+title: RB World 5
+
+# Buckets the scorer can weight. Keep them 1:1 with your legacy fields so calculate_scores works.
+buckets:
+  ppg:    {}
+  apg:    {}
+  orpg:   {}
+  drpg:   {}
+  spg:    {}
+  bpg:    {}
+  aefg:   {}   # derived in scorer; present so weights can include it
+  tov_eff: {}  # derived in scorer; present so weights can include it (penalty)
+
+# Metrics your adapter produces (legacy keys your scorer expects)
+metrics:
+  - { key: ppg,  bucket: ppg,  clamp: [0, 60] }
+  - { key: apg,  bucket: apg,  clamp: [0, 30] }
+  - { key: orpg, bucket: orpg, clamp: [0, 20] }
+  - { key: drpg, bucket: drpg, clamp: [0, 25] }
+  - { key: spg,  bucket: spg,  clamp: [0, 10] }
+  - { key: bpg,  bucket: bpg,  clamp: [0, 8]  }
+  - { key: fgm,  bucket: aefg }    # raw inputs for aEFG derivation
+  - { key: fga,  bucket: aefg }
+  - { key: tov,  bucket: tov_eff, clamp: [0, 15], invert: true }
+
+# Mapping from canonical metric keys → raw row fields (after alias normalization in hooks)
+# Keep it dead simple; we’ll normalize aliases in pre_map.
+mapping:
+  ppg:  $.ppg
+  apg:  $.apg
+  orpg: $.orpg
+  drpg: $.drpg
+  spg:  $.spg
+  bpg:  $.bpg
+  fgm:  $.fgm
+  fga:  $.fga
+  tov:  $.tov
+
+# Default preset most people will use with calculate_scores (since it derives aEFG and TOV efficie_

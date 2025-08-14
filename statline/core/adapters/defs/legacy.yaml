@@ -1,0 +1,50 @@
+key: legacy
+version: 0.1.0
+aliases: [basketball]
+title: Legacy Basketball
+
+buckets:
+  scoring: {}
+  playmaking: {}
+  rebounding: {}
+  defense: {}
+  efficiency: {}
+  discipline: {}
+
+metrics:
+  - { key: ppg,  bucket: scoring,    clamp: [0, 60] }
+  - { key: apg,  bucket: playmaking, clamp: [0, 30] }
+  - { key: orpg, bucket: rebounding, clamp: [0, 20] }
+  - { key: drpg, bucket: rebounding, clamp: [0, 25] }
+  - { key: spg,  bucket: defense,    clamp: [0, 10] }
+  - { key: bpg,  bucket: defense,    clamp: [0, 8]  }
+  - { key: fgm,  bucket: efficiency }
+  - { key: fga,  bucket: efficiency }
+  - { key: tov,  bucket: discipline, clamp: [0, 15], invert: true }
+
+# raw → canonical (keep keys exactly as in metrics above)
+mapping:
+  ppg: raw["ppg"]
+  apg: raw["apg"]
+  orpg: raw["orpg"]
+  drpg: raw["drpg"]
+  spg: raw["spg"]
+  bpg: raw["bpg"]
+  fgm: raw["fgm"]
+  fga: raw["fga"]
+  tov: raw["tov"]
+
+# optional; if omitted the loader will assign uniform PRI weights across buckets
+weights:
+  pri:
+    scoring: 0.35
+    playmaking: 0.20
+    rebounding: 0.15
+    defense: 0.10
+    efficiency: 0.15
+    discipline: 0.05
+
+# optional; you can omit for now
+penalties:
+  pri:
+    discipline: 0.10

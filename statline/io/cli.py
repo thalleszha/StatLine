@@ -1,4 +1,5 @@
-from statline.core.calculator import interactive_mode
+# statline/io/cli.py (shim; transitional)
+from statline.cli import main
 
-def main():
-    interactive_mode()
+if __name__ == "__main__":
+    main()

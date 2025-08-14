@@ -1,12 +1,74 @@
-MVP_WEIGHTS_PCT_BY_ROLE = {
-    "guard":  {"ppg":34,"apg":24,"orpg":4,"drpg":6,"def_":20,"aefg":12},
-    "wing":   {"ppg":33,"apg":20,"orpg":6,"drpg":9,"def_":22,"aefg":10},
-    "center": {"ppg":30,"apg":12,"orpg":10,"drpg":18,"def_":22,"aefg":8},
-}
-OFF_WEIGHTS_PCT = {"ppg":45,"apg":30,"orpg":10,"aefg":15}
-DEF_WEIGHTS_PCT = {"drpg":35,"def_":65}
+# statline/core/weights.py
+from __future__ import annotations
 
-def as_unit_weights(weights_pct: dict) -> dict:
-    total = sum(weights_pct.values())
-    if total <= 0: raise ValueError("Weights must sum to > 0.")
-    return {k: v/total for k,v in weights_pct.items()}
+from typing import Mapping, Iterable, Optional, Dict, SupportsFloat
+
+
+def normalize_weights(weights: Mapping[str, SupportsFloat]) -> dict[str, float]:
+    """
+    Normalize weights (ints/floats) so their L1 (sum of absolute values) is 1.0.
+    Preserves sign (so you can penalize 'bad' metrics with negative weights).
+    If all weights are zero/missing, returns {}.
+    """
+    total = float(sum(abs(float(v)) for v in weights.values()))
+    if total <= 0.0:
+        return {}
+    return {k: float(v) / total for k, v in weights.items()}
+
+
+def resolve_weights(
+    metrics: Iterable[str],
+    *,
+    defaults: Optional[Mapping[str, SupportsFloat]] = None,
+    override: Optional[Mapping[str, SupportsFloat]] = None,
+    fill_missing_with_zero: bool = True,
+) -> dict[str, float]:
+    """
+    Merge default weights with league overrides (override wins), then normalize.
+
+    - `metrics`: canonical metric keys for the current adapter (whatever it emits).
+    - `defaults`: adapter-provided weights (optional).
+    - `override`: league- or guild-specific overrides (sparse, optional).
+    - `fill_missing_with_zero`: if True, any metric not present gets 0 weight.
+
+    Returns unit (L1) weights; may be empty if everything is zero.
+    """
+    merged: Dict[str, float] = {}
+
+    # Start from defaults
+    if defaults:
+        for k, v in defaults.items():
+            merged[str(k)] = float(v)
+
+    # Apply overrides
+    if override:
+        for k, v in override.items():
+            merged[str(k)] = float(v)
+
+    # Ensure only known metrics remain; optionally fill missing with zeros
+    metric_set = set(metrics)
+    merged = {k: v for k, v in merged.items() if k in metric_set}
+    if fill_missing_with_zero:
+        for m in metric_set:
+            merged.setdefault(m, 0.0)
+
+    return normalize_weights(merged)
+
+
+def pick_profile(
+    profiles: Mapping[str, Mapping[str, SupportsFloat]] | None,
+    name: str | None,
+) -> Mapping[str, SupportsFloat]:
+    """
+    If an adapter exposes multiple weight profiles (e.g., 'default', 'mvp', 'defense'),
+    select one by name; fall back to 'default' or empty mapping.
+    """
+    if not profiles:
+        return {}
+    if name and name in profiles:
+        return profiles[name]
+    if "default" in profiles:
+        return profiles["default"]
+    # just grab the first profile deterministically
+    first_key = next(iter(profiles.keys()))
+    return profiles[first_key]

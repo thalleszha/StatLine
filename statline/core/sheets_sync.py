@@ -1,41 +1,262 @@
 from __future__ import annotations
-from typing import Iterable, Dict, Any
-from .guild_manager import get_guild_config, update_guild_config, now_ts
+
+from typing import Any, Dict, Iterable, List, Optional, Mapping, Protocol, runtime_checkable, cast
+
+from .guild_manager import get_guild_config, now_ts, GuildConfig
 from .db import get_conn
-# If you wire gspread, import lazily in a try/except inside the function.
+from .adapters import supported_adapters, load_adapter  # registry
 
-def sync_guild_sheets(guild_id: str) -> int:
-    """Pulls rows for guild from Google Sheets and upserts teams & players.
-       Returns number of players updated."""
-    cfg = get_guild_config(guild_id)
-    if not cfg:
-        raise RuntimeError("Guild is not configured. Run /setup first.")
+# Optional: Google Sheets (installed via extras "sheets")
+try:  # soft import; keep types loose to satisfy Pylance when missing
+    import gspread  # type: ignore
+except Exception:  # pragma: no cover
+    gspread = None  # type: ignore
 
-    # TODO: fetch rows from Google Sheets using cfg["sheet_key"] / cfg["sheet_tab"]
-    # For now, imagine we already parsed a list of players:
-    players: Iterable[Dict[str, Any]] = []  # replace with real fetch
 
-    conn = get_conn()
-    count = 0
-    with conn:
-        for p in players:
-            fuzzy = p["display_name"].strip().lower()
-            conn.execute(
-                """
-                INSERT INTO players (guild_id, display_name, fuzzy_key, team_name,
-                    ppg, apg, orpg, drpg, spg, bpg, fgm, fga, tov)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(guild_id, fuzzy_key) DO UPDATE SET
-                    display_name=excluded.display_name,
-                    team_name=excluded.team_name,
-                    ppg=excluded.ppg, apg=excluded.apg, orpg=excluded.orpg, drpg=excluded.drpg,
-                    spg=excluded.spg, bpg=excluded.bpg, fgm=excluded.fgm, fga=excluded.fga, tov=excluded.tov
-                """,
-                (guild_id, p["display_name"], fuzzy, p.get("team_name"),
-                 p.get("ppg", 0), p.get("apg", 0), p.get("orpg", 0), p.get("drpg", 0),
-                 p.get("spg", 0), p.get("bpg", 0), p.get("fgm", 0), p.get("fga", 0), p.get("tov", 0)),
+# ──────────────────────────────────────────────────────────────────────────────
+# Adapter protocol(s): support either map_raw(...) or map_raw_to_metrics(...)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@runtime_checkable
+class _MapRawProto(Protocol):
+    def map_raw(self, raw: Mapping[str, Any]) -> Dict[str, float]: ...
+
+@runtime_checkable
+class _MapRawToMetricsProto(Protocol):
+    def map_raw_to_metrics(self, raw: Mapping[str, Any]) -> Dict[str, float]: ...
+
+
+def _apply_adapter_map(adp: Any, raw: Mapping[str, Any]) -> Dict[str, float]:
+    """Dispatch to whichever mapping function the adapter provides, with runtime type checks."""
+    if isinstance(adp, _MapRawProto):
+        return adp.map_raw(raw)
+    if isinstance(adp, _MapRawToMetricsProto):
+        return adp.map_raw_to_metrics(raw)
+    raise AttributeError(f"Adapter {getattr(adp, 'KEY', adp)!r} lacks map_raw/map_raw_to_metrics")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tiny utils
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _normalize_str(v: Any) -> str:
+    return str(v).strip()
+
+def _fuzzy_key(name: str) -> str:
+    return name.lower()
+
+def _coerce_float(v: Any) -> Optional[float]:
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Schema for adapter-agnostic cache
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _ensure_cache_schema() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS entities (
+                guild_id     TEXT NOT NULL,
+                fuzzy_key    TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                group_name   TEXT,
+                PRIMARY KEY (guild_id, fuzzy_key)
             )
-            count += 1
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metrics (
+                guild_id     TEXT NOT NULL,
+                fuzzy_key    TEXT NOT NULL,
+                metric_key   TEXT NOT NULL,
+                metric_value REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, fuzzy_key, metric_key),
+                FOREIGN KEY (guild_id, fuzzy_key)
+                    REFERENCES entities (guild_id, fuzzy_key)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metrics_guild_metric ON metrics (guild_id, metric_key)"
+        )
 
-    update_guild_config(guild_id, last_sync_ts=now_ts())
-    return count
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sheets I/O (safe; no None credentials passed to constructors)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _get_gspread_client() -> Any | None:  # keep Any to avoid depending on gspread stubs
+    if gspread is None:
+        return None
+    # Prefer service account; falls back to oauth() if available locally.
+    try:
+        return gspread.service_account()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        return gspread.oauth()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+def _fetch_rows_from_sheets(sheet_key: str, sheet_tab: str) -> list[dict[str, Any]]:
+    gc = _get_gspread_client()
+    if gc is None:
+        return []
+    sh = gc.open_by_key(sheet_key)
+    ws = sh.worksheet(sheet_tab)
+    rows = ws.get_all_records()  # header → dict keys
+    return rows or []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Adapter selection (optional sniff)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _autodetect_adapter(headers: Iterable[str]) -> Optional[str]:
+    hdrs = [str(h).strip().lower() for h in headers]
+    for key in sorted(supported_adapters().keys()):
+        try:
+            adp = load_adapter(key)
+            sniff = getattr(adp, "sniff", None)
+            if callable(sniff) and sniff(hdrs):
+                return cast(str, getattr(adp, "KEY", key))
+        except Exception:
+            continue
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Upserts
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _upsert_entity(guild_id: str, display_name: str, group_name: Optional[str]) -> str:
+    fuzzy = _fuzzy_key(display_name)
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO entities (guild_id, fuzzy_key, display_name, group_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, fuzzy_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                group_name   = excluded.group_name
+            """,
+            (guild_id, fuzzy, display_name, group_name),
+        )
+    return fuzzy
+
+def _upsert_metrics(guild_id: str, fuzzy: str, mapped: Dict[str, Any]) -> int:
+    rows: list[tuple[str, str, str, float]] = []
+    for k, v in mapped.items():
+        fv = _coerce_float(v)
+        if fv is None:
+            continue
+        rows.append((guild_id, fuzzy, k, fv))
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """
+            INSERT INTO metrics (guild_id, fuzzy_key, metric_key, metric_value)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, fuzzy_key, metric_key) DO UPDATE SET
+                metric_value = excluded.metric_value
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────────────
+
+def sync_guild_sheets(
+    guild_id: str,
+    *,
+    adapter_key: Optional[str] = None,
+    group_field_candidates: tuple[str, ...] = ("team", "group", "agent", "role"),
+    name_field_candidates: tuple[str, ...] = ("display_name", "name", "player", "id"),
+) -> int:
+    """
+    Pull rows from Google Sheets and upsert into adapter-agnostic cache.
+
+    Adapter resolution:
+      - if adapter_key is provided: use it
+      - else try _autodetect_adapter(headers)
+      - else raise
+
+    Returns number of entities upserted.
+    """
+    cfg: GuildConfig | None = get_guild_config(guild_id)
+    if cfg is None or not cfg.sheet_key:
+        raise RuntimeError("Guild is not configured. Set sheet_key/sheet_tab first.")
+
+    rows = _fetch_rows_from_sheets(cfg.sheet_key, cfg.sheet_tab or "STATS")
+
+    # Even if there are no rows (no client/empty sheet), we still stamp freshness
+    # so callers with TTL don't spin. This is intentional.
+    if not rows:
+        with get_conn() as conn:
+            ts = now_ts()
+            conn.execute(
+                "UPDATE guild_config SET last_sync_ts = ?, updated_ts = ? WHERE guild_id = ?",
+                (ts, ts, guild_id),
+            )
+        return 0
+
+    headers = list(rows[0].keys())
+    key = adapter_key or _autodetect_adapter(headers)
+    if not key:
+        raise RuntimeError("Unable to detect adapter for sheet; provide adapter_key explicitly.")
+
+    adp = load_adapter(key)  # runtime module -> satisfies either protocol above
+
+    _ensure_cache_schema()
+
+    upserted_entities = 0
+    for raw in rows:
+        # pick a display name
+        display = ""
+        for f in name_field_candidates:
+            if f in raw and str(raw[f]).strip():
+                display = _normalize_str(raw[f])
+                break
+        if not display:
+            continue  # skip nameless rows
+
+        # optional group
+        group_val: Optional[str] = None
+        for f in group_field_candidates:
+            if f in raw and str(raw[f]).strip():
+                group_val = _normalize_str(raw[f])
+                break
+
+        mapped = _apply_adapter_map(adp, raw)  # <— supports either mapping API
+
+        fuzzy = _upsert_entity(guild_id, display, group_val)
+        _upsert_metrics(guild_id, fuzzy, mapped)
+        upserted_entities += 1
+
+    # stamp freshness
+    with get_conn() as conn:
+        ts = now_ts()
+        conn.execute(
+            "UPDATE guild_config SET last_sync_ts = ?, updated_ts = ? WHERE guild_id = ?",
+            (ts, ts, guild_id),
+        )
+
+    return upserted_entities
