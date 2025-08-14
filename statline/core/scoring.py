@@ -1,3 +1,4 @@
+# statline/core/scoring.py
 from __future__ import annotations
 
 import math
@@ -165,6 +166,35 @@ def _batch_context_from_rows(rows: List[Dict[str, Any]], metric_keys: List[str],
             ctx[k] = {"leader": xs[-1], "floor": xs[0]}   # higher is better
     return ctx
 
+def _caps_from_clamps(
+    adapter: Any,
+    invert_map: Dict[str, bool],
+) -> Dict[str, float]:
+    """
+    Build per-metric caps from adapter metric clamp ranges.
+    - Non-inverted: cap = upper bound (or 1.0 if missing)
+    - Inverted:     cap = max(upper - lower, 1e-6) if clamp given, else 1.0
+    """
+    caps: Dict[str, float] = {}
+    for m in getattr(adapter, "metrics", []):
+        lower = upper = None
+        if getattr(m, "clamp", None):
+            try:
+                lower = float(m.clamp[0])
+                upper = float(m.clamp[1])
+            except Exception:
+                lower = upper = None
+
+        if invert_map.get(m.key, False):
+            caps[m.key] = max(1e-6, (upper - lower)) if (upper is not None and lower is not None) else 1.0
+        else:
+            caps[m.key] = float(upper) if (upper is not None) else 1.0
+
+    # safety: never zero
+    for k, v in list(caps.items()):
+        caps[k] = max(1e-6, float(v))
+    return caps
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Generic PRI kernel (single-row). Internal helper.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -236,8 +266,16 @@ def calculate_pri(
         extended_rows.append(r)
 
     # 3) Resolve context (leaders/floors) & build caps
-    ctx = context or _batch_context_from_rows(extended_rows, metric_keys, invert_map)
-    caps = caps_from_context(metric_keys, ctx, invert=invert_map)
+    if context is None and len(extended_rows) == 1:
+        # Interactive single-row: normalize using adapter clamps instead of self-derived batch leaders
+        caps = _caps_from_clamps(adapter, invert_map)
+        # for transparency only; not used in math (caps already computed)
+        ctx = {k: {"leader": caps[k], "floor": 0.0} for k in caps.keys()}
+        context_used = "clamps"
+    else:
+        ctx = context or _batch_context_from_rows(extended_rows, metric_keys, invert_map)
+        caps = caps_from_context(metric_keys, ctx, invert=invert_map)
+        context_used = "batch" if context is None else "external"
 
     # 4) Bucket weights → per-metric weights; flip sign for inverted metrics
     bucket_weights = dict(weights_override or getattr(adapter, "weights", {}).get("pri", {}) or {})
@@ -273,7 +311,7 @@ def calculate_pri(
             c = bucket_counts[b]
             bucket_scores[b] = (bucket_scores[b] / c) if c else 0.0
 
-        # normalize raw score back to 0..1 using configured scale/offset
+        # normalize raw score back to 0–1 using configured scale/offset
         denom = max(1e-6, float(M_SCALE))
         pri_raw = clamp01((res.score - float(M_OFFSET)) / denom)
 
@@ -283,7 +321,7 @@ def calculate_pri(
             "buckets": bucket_scores,
             "components": res.components,
             "weights": res.weights,
-            "context_used": "batch" if context is None else "external",
+            "context_used": context_used,
         })
     return out
 

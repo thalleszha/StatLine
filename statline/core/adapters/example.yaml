@@ -1,0 +1,69 @@
+# reference: how-to.md
+
+key: example_game
+version: 0.1.0
+aliases: [ex, sample]
+title: Example Game
+
+dimensions:               # reference how-to.md
+  map:
+    values: [MapA, MapB, MapC]
+  side:
+    values: [Attack, Defense]
+  role:
+    values: [Carry, Support, Flex]
+  mode:
+    values: [Pro, Ranked, Scrim]
+
+buckets:                  # reference how-to.md
+  scoring: {}
+  impact: {}
+  utility: {}
+  survival: {}
+  discipline: {}
+
+metrics:                  # reference how-to.md
+  - { key: stat1_per_round, bucket: scoring,    clamp: [0, 1.5] }
+  - { key: stat2_rate,      bucket: impact,     clamp: [0, 1.0] }
+  - { key: stat3_count,     bucket: utility,    clamp: [0, 50]  }
+  - { key: stat4_quality,   bucket: survival,   clamp: [0.3, 1.0] }
+  - { key: mistakes,        bucket: discipline, clamp: [0, 25], invert: true }
+
+efficiency:               # reference how-to.md
+  - { key: eff_primary,   make: raw["made"],      attempt: raw["attempts"],      bucket: impact }
+  - { key: eff_secondary, make: raw["made_alt"],  attempt: raw["attempts_alt"],  bucket: utility }
+
+mapping:                  # reference how-to.md
+  stat1_per_round: (raw["stat1_total"] or 0) / max(raw.get("rounds_played", 1), 1)
+  stat2_rate:      (raw["stat2_numer"] or 0) / max(raw.get("stat2_denom", 1), 1)
+  stat3_count:     raw["stat3_count"]
+  stat4_quality:   (raw["stat4_good"] or 0) / max((raw["stat4_total"] or 1), 1)
+  mistakes:        raw["mistakes"]
+
+weights:                  # reference how-to.md
+  pri:
+    scoring:    0.30
+    impact:     0.28
+    utility:    0.16
+    survival:   0.16
+    discipline: 0.10
+  mvp:
+    scoring:    0.34
+    impact:     0.30
+    utility:    0.12
+    survival:   0.14
+    discipline: 0.10
+  support:
+    scoring:    0.16
+    impact:     0.18
+    utility:    0.40
+    survival:   0.16
+    discipline: 0.10
+
+penalties:                # reference how-to.md
+  pri:       { discipline: 0.10 }
+  mvp:       { discipline: 0.12 }
+  support:   { discipline: 0.08 }
+
+sniff:                    # reference how-to.md
+  require_any_headers: [stat1_total, stat2_numer, stat2_denom, rounds_played, mistakes]

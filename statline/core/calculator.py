@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional, Mapping, Callable, IO, cast
+from typing import Dict, Any, List, Optional, Mapping, Callable, IO, cast, Iterable
 import typer
 
 from .adapters import list_names, load as load_adapter
