@@ -3,13 +3,14 @@ from pathlib import Path
 from typing import Dict, List
 
 from .loader import load_spec
-from .compile import compile_adapter, CompiledAdapter  # <- these must exist/exported
+from .compile import compile_adapter, CompiledAdapter  # must exist in compile.py
 
 _CACHE: Dict[str, CompiledAdapter] = {}
 
 def _discover() -> None:
     base = Path(__file__).parent / "defs"
     _CACHE.clear()
+    # correct pattern: match .yaml or .yml
     for y in sorted(base.glob("*.y*ml")):
         spec = load_spec(y.stem)
         comp = compile_adapter(spec)

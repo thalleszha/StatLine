@@ -1,0 +1,56 @@
+key: example_game
+version: 0.1.0
+aliases: [ex, sample]
+title: Example Game
+
+dimensions:
+  map:   { values: [MapA, MapB, MapC] }
+  side:  { values: [Attack, Defense] }
+  role:  { values: [Carry, Support, Flex] }
+  mode:  { values: [Pro, Ranked, Scrim] }
+
+buckets:
+  scoring: {}
+  impact: {}
+  utility: {}
+  survival: {}
+  discipline: {}
+
+metrics:
+  # direct fields
+  - { key: stat3_count, bucket: utility,    clamp: [0, 50],  source: { field: stat3_count } }
+  - { key: mistakes,    bucket: discipline, clamp: [0, 25], invert: true, source: { field: mistakes } }
+
+# ratios/derived — replace old mapping math
+efficiency:
+  - { key: stat1_per_round, make: raw["stat1_total"], attempt: raw["rounds_played"], bucket: scoring }
+  - { key: stat2_rate,      make: raw["stat2_numer"], attempt: raw["stat2_denom"],   bucket: impact }
+  - { key: stat4_quality,   make: raw["stat4_good"],  attempt: raw["stat4_total"],   bucket: survival }
+
+weights:
+  pri:
+    scoring:    0.30
+    impact:     0.28
+    utility:    0.16
+    survival:   0.16
+    discipline: 0.10
+  mvp:
+    scoring:    0.34
+    impact:     0.30
+    utility:    0.12
+    survival:   0.14
+    discipline: 0.10
+  support:
+    scoring:    0.16
+    impact:     0.18
+    utility:    0.40
+    survival:   0.16
+    discipline: 0.10
+
+penalties:
+  pri:     { discipline: 0.10 }
+  mvp:     { discipline: 0.12 }
+  support: { discipline: 0.08 }
+
+sniff:
+  require_any_headers: [stat1_total, stat2_numer, stat2_denom, rounds_played, mistakes]

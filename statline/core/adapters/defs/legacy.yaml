@@ -12,39 +12,36 @@ buckets:
   discipline: {}
 
 metrics:
-  - { key: ppg,  bucket: scoring,    clamp: [0, 60] }
-  - { key: apg,  bucket: playmaking, clamp: [0, 30] }
-  - { key: orpg, bucket: rebounding, clamp: [0, 20] }
-  - { key: drpg, bucket: rebounding, clamp: [0, 25] }
-  - { key: spg,  bucket: defense,    clamp: [0, 10] }
-  - { key: bpg,  bucket: defense,    clamp: [0, 8]  }
-  - { key: fgm,  bucket: efficiency }
-  - { key: fga,  bucket: efficiency }
-  - { key: tov,  bucket: discipline, clamp: [0, 15], invert: true }
+  - { key: ppg,  bucket: scoring,    clamp: [0, 60],  source: { field: ppg } }
+  - { key: apg,  bucket: playmaking, clamp: [0, 30],  source: { field: apg } }
+  - { key: orpg, bucket: rebounding, clamp: [0, 20],  source: { field: orpg } }
+  - { key: drpg, bucket: rebounding, clamp: [0, 25],  source: { field: drpg } }
+  - { key: spg,  bucket: defense,    clamp: [0, 10],  source: { field: spg } }
+  - { key: bpg,  bucket: defense,    clamp: [0, 8],   source: { field: bpg } }
+  - { key: fgm,  bucket: efficiency,                  source: { field: fgm } }   # aux
+  - { key: fga,  bucket: efficiency,                  source: { field: fga } }   # aux
+  - { key: tov,  bucket: discipline, clamp: [0, 15], invert: true, source: { field: tov } }
 
-# raw → canonical (keep keys exactly as in metrics above)
-mapping:
-  ppg: raw["ppg"]
-  apg: raw["apg"]
-  orpg: raw["orpg"]
-  drpg: raw["drpg"]
-  spg: raw["spg"]
-  bpg: raw["bpg"]
-  fgm: raw["fgm"]
-  fga: raw["fga"]
-  tov: raw["tov"]
+# Optional: derive a shooting-rate for the efficiency bucket (0..1)
+efficiency:
+  - key: eff_rate
+    make: $.fgm
+    attempt: $.fga
+    bucket: efficiency
 
-# optional; if omitted the loader will assign uniform PRI weights across buckets
 weights:
   pri:
-    scoring: 0.35
+    scoring:    0.35
     playmaking: 0.20
     rebounding: 0.15
-    defense: 0.10
+    defense:    0.10
     efficiency: 0.15
     discipline: 0.05
 
-# optional; you can omit for now
 penalties:
   pri:
     discipline: 0.10
+
+# Lightweight sniff so sheets_sync can auto-pick this
+sniff:
+  require_any_headers: [ppg, apg, orpg, drpg, spg, bpg, tov, fgm, fga]

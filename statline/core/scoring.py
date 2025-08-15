@@ -233,7 +233,7 @@ def _pri_kernel_single(
 
 def calculate_pri(
     mapped_rows: List[Dict[str, Any]],
-    adapter: Any,   # concrete adapters vary; keep strong return typing
+    adapter: Any,
     *,
     team_wins: int = 0,
     team_losses: int = 0,
@@ -256,8 +256,8 @@ def calculate_pri(
         r: Dict[str, Any] = dict(raw)
         for eff in eff_list:
             make = max(0.0, float(adapter.eval_expr(eff.make, raw)))
-            att  = max(1.0, float(adapter.eval_expr(eff.attempt, raw)))
-            pct  = make / att
+            att = max(1.0, float(adapter.eval_expr(eff.attempt, raw)))
+            pct = make / att
             r[eff.key] = clamp01(pct)
             if eff.key not in metric_to_bucket:
                 metric_to_bucket[eff.key] = eff.bucket
@@ -267,9 +267,13 @@ def calculate_pri(
 
     # 3) Resolve context (leaders/floors) & build caps
     if context is None and len(extended_rows) == 1:
-        # Interactive single-row: normalize using adapter clamps instead of self-derived batch leaders
+        # Interactive single-row: use adapter clamps for declared metrics...
         caps = _caps_from_clamps(adapter, invert_map)
-        # for transparency only; not used in math (caps already computed)
+        # ...and ensure injected efficiency metrics cap to 1.0
+        for eff in eff_list:
+            if eff.key not in caps:
+                caps[eff.key] = 1.0
+        # (for transparency)
         ctx = {k: {"leader": caps[k], "floor": 0.0} for k in caps.keys()}
         context_used = "clamps"
     else:
@@ -283,6 +287,9 @@ def calculate_pri(
     for k, inv in invert_map.items():
         if inv and k in per_metric_weights:
             per_metric_weights[k] = -abs(per_metric_weights[k])
+
+    # Identify which metrics actually contribute (non-zero absolute weight)
+    scored_metrics = {k for k, w in per_metric_weights.items() if abs(w) > 1e-12}
 
     # 5) Score each row and compute per-bucket averages for explainability
     out: List[Dict[str, Any]] = []
@@ -298,32 +305,43 @@ def calculate_pri(
             clamp_upper=99.0,
         )
 
-        # per-bucket aggregation (mean of component scores inside each bucket)
+        # Per-bucket aggregation (mean of component scores inside each bucket),
+        # but only over scored metrics to avoid zero-weight pollution (e.g., fgm/fga aux inputs).
         bucket_scores: Dict[str, float] = {b: 0.0 for b in getattr(adapter, "buckets", {}).keys()}
-        bucket_counts: Dict[str, int]   = {b: 0 for b in getattr(adapter, "buckets", {}).keys()}
+        bucket_counts: Dict[str, int] = {b: 0 for b in getattr(adapter, "buckets", {}).keys()}
         for k, v in res.components.items():
+            if k not in scored_metrics:
+                continue
             b = metric_to_bucket.get(k)
             if b is None:
                 continue
             bucket_scores[b] += v
             bucket_counts[b] += 1
-        for b in bucket_scores:
+        # Average and drop empty buckets (those with no scored metrics)
+        for b in list(bucket_scores.keys()):
             c = bucket_counts[b]
             bucket_scores[b] = (bucket_scores[b] / c) if c else 0.0
+            if c == 0:
+                bucket_scores.pop(b, None)
 
-        # normalize raw score back to 0–1 using configured scale/offset
+        # Normalize raw score back to 0–1 using configured scale/offset
         denom = max(1e-6, float(M_SCALE))
         pri_raw = clamp01((res.score - float(M_OFFSET)) / denom)
+
+        # Also trim components to scored metrics for cleaner "Top components"
+        scored_components = {k: v for k, v in res.components.items() if k in scored_metrics}
 
         out.append({
             "pri": int(round(res.score)),
             "pri_raw": pri_raw,
             "buckets": bucket_scores,
-            "components": res.components,
-            "weights": res.weights,
+            "components": scored_components,
+            "weights": res.weights,  # already unit-L1
             "context_used": context_used,
         })
+
     return out
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Legacy hoops API (kept for backward compatibility)

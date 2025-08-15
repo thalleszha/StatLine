@@ -1,6 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Mapping
+
+# NOTE:
+# - mapping is now OPTIONAL (default empty dict)
+# - MetricSpec gains 'source' (strict schema) and 'transform' params (dict), both optional
+# - aliases/penalties get sensible defaults
 
 @dataclass(frozen=True)
 class MetricSpec:
@@ -8,7 +13,9 @@ class MetricSpec:
     bucket: str
     clamp: Optional[Tuple[float, float]] = None
     invert: bool = False
-    transform: Optional[str] = None
+    # STRICT SCHEMA FIELDS (optional for backward-compat with legacy adapters)
+    source: Optional[Mapping[str, object]] = None   # e.g. {"field": "ppg"} or {"ratio": {...}}
+    transform: Optional[Mapping[str, object]] = None  # e.g. {"name": "capped_linear", "params": {"cap": 300.0}}
 
 @dataclass(frozen=True)
 class EffSpec:
@@ -22,11 +29,12 @@ class EffSpec:
 class AdapterSpec:
     key: str
     version: str
-    aliases: Tuple[str, ...]
-    title: str
-    buckets: Dict[str, dict]
-    metrics: List[MetricSpec]
-    mapping: Dict[str, str]
-    weights: Dict[str, Dict[str, float]]
-    penalties: Dict[str, Dict[str, float]]
+    aliases: Tuple[str, ...] = ()
+    title: str = ""
+    buckets: Dict[str, dict] = field(default_factory=dict)
+    metrics: List[MetricSpec] = field(default_factory=list)
+    # LEGACY: mapping expressions (optional)
+    mapping: Dict[str, str] = field(default_factory=dict)
+    weights: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    penalties: Dict[str, Dict[str, float]] = field(default_factory=dict)
     efficiency: List[EffSpec] = field(default_factory=list)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Dict, Any, Mapping
+from typing import Dict, Any, List, Mapping, Optional, Tuple, cast
 import yaml
 
 from .types import AdapterSpec, MetricSpec, EffSpec
@@ -21,99 +21,67 @@ def _uniform_weights(buckets: Dict[str, dict]) -> Dict[str, Dict[str, float]]:
     w = 1.0 / n
     return {"pri": {k: w for k in keys}}
 
+def _as_clamp(v: Any) -> Optional[Tuple[float, float]]:
+    if not v:
+        return None
+    a, b = v[0], v[1]
+    return (float(a), float(b))
+
 def load_spec(name: str) -> AdapterSpec:
     data = _read_yaml_for(name)
 
-    # required keys
-    for req in ("key", "version", "buckets", "metrics", "mapping"):
+    # Required keys (mapping is OPTIONAL now)
+    for req in ("key", "version", "buckets", "metrics"):
         if req not in data:
             raise KeyError(f"Adapter '{name}' is missing required key: {req}")
 
-    metrics = [MetricSpec(**m) for m in data["metrics"]]
-    effs: List[EffSpec] = [EffSpec(**e) for e in data.get("efficiency", [])]
+    # Buckets and weights
+    buckets: Dict[str, dict] = cast(Dict[str, dict], data["buckets"])
+    weights: Dict[str, Dict[str, float]] = cast(
+        Dict[str, Dict[str, float]],
+        data.get("weights") or _uniform_weights(buckets),
+    )
+    penalties: Dict[str, Dict[str, float]] = cast(Dict[str, Dict[str, float]], data.get("penalties", {}))
 
-    buckets = data["buckets"]
-    weights = data.get("weights") or _uniform_weights(buckets)
-    penalties = data.get("penalties", {})
+    # Metrics — support strict schema fields
+    metrics: List[MetricSpec] = []
+    for m in cast(List[Mapping[str, Any]], data["metrics"]):
+        metrics.append(
+            MetricSpec(
+                key=str(m["key"]),
+                bucket=str(m["bucket"]),
+                clamp=_as_clamp(m.get("clamp")),
+                invert=bool(m.get("invert", False)),
+                source=cast(Optional[Mapping[str, Any]], m.get("source")),
+                transform=cast(Optional[Mapping[str, Any]], m.get("transform")),
+            )
+        )
+
+    # Efficiency (pass-through if you use it)
+    eff_list: List[EffSpec] = []
+    for e in cast(List[Mapping[str, Any]], data.get("efficiency", [])):
+        eff_list.append(
+            EffSpec(
+                key=str(e["key"]),
+                make=str(e["make"]),
+                attempt=str(e["attempt"]),
+                bucket=str(e["bucket"]),
+                transform=cast(Optional[str], e.get("transform")),
+            )
+        )
+
+    # Optional legacy mapping (keep for backward compat)
+    mapping: Dict[str, str] = cast(Dict[str, str], data.get("mapping", {}))
 
     return AdapterSpec(
-        key=data["key"],
-        version=data["version"],
+        key=str(data["key"]),
+        version=str(data["version"]),
         aliases=tuple(data.get("aliases", [])),
-        title=data.get("title", data["key"]),
+        title=str(data.get("title", data["key"])),
         buckets=buckets,
         metrics=metrics,
-        mapping=data["mapping"],
+        mapping=mapping,           # may be empty {}
         weights=weights,
         penalties=penalties,
-        efficiency=effs,
+        efficiency=eff_list,
     )
-
-# ──────────────────────────────────────────────────────────────
-# Runtime wrapper so .map_raw() exists and eval has 'raw'
-# ──────────────────────────────────────────────────────────────
-
-def _translate_expr(expr: Any) -> str:
-    """
-    Accept both:
-      - Pythonic:      raw["ppg"], ppg + apg*0.5, etc.
-      - Legacy jq-ish: $.ppg, $.foo.bar  -> raw["foo"]["bar"]
-    """
-    s = str(expr)
-    if s.startswith("$."):
-        parts = s[2:].split(".")
-        return "raw[" + "][".join(repr(p) for p in parts) + "]"
-    return s
-
-class Adapter:
-    """Runtime adapter wrapper around an AdapterSpec, with safe mapping."""
-    def __init__(self, spec: AdapterSpec):
-        self.spec = spec
-        self.key = spec.key
-        self.metrics = spec.metrics
-        self.weights = spec.weights
-        self.mapping = spec.mapping
-        self.buckets = spec.buckets
-        self.penalties = spec.penalties
-        self.efficiency = spec.efficiency
-
-    def map_raw(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        # Build numeric context from declared metrics only
-        ctx: Dict[str, Any] = {}
-        for m in self.metrics:
-            val = raw.get(m.key, 0)
-            if isinstance(val, str):
-                s = val.strip()
-                if not s:
-                    val = 0.0
-                else:
-                    try:
-                        val = float(s.replace(",", "."))
-                    except ValueError:
-                        # leave as string if truly non-numeric
-                        pass
-            ctx[m.key] = val
-
-        # Locals passed to eval: support both bare names (ppg) and raw["ppg"]
-        eval_locals: Dict[str, Any] = dict(ctx)
-        eval_locals["raw"] = ctx  # <- this fixes: name 'raw' is not defined
-
-        mapped: Dict[str, Any] = {}
-        for k, expr in self.mapping.items():
-            code = _translate_expr(expr)
-            try:
-                mapped[k] = eval(code, {}, eval_locals)
-            except SyntaxError as se:
-                print(f"[Mapping SyntaxError] key={k!r}, expr={code!r}")
-                print(f"Context: {eval_locals}")
-                raise
-            except Exception as e:
-                print(f"[Mapping error] key={k!r}, expr={code!r}, error={e}")
-                print(f"Context: {eval_locals}")
-                raise
-        return mapped
-
-def load_adapter(name: str) -> Adapter:
-    """Load a spec from YAML and wrap it in an Adapter with map_raw()."""
-    spec = load_spec(name)
-    return Adapter(spec)
