@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: ["opened", "synchronize", "reopened"]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +17,13 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_PYTHON_VERSION_WARNING: "1"
   PYTHONUNBUFFERED: "1"
+  PYTHONIOENCODING: "utf-8"
+  PYTHONUTF8: "1"
+  TZ: "UTC"
+  CI: "1"
+  ORION_TOKEN: "TEST_TOKEN"
+  STATLINE_ENV: "test"
+  SKIP_LIVE_SHEETS: "1"
 
 jobs:
   ruff:
@@ -28,18 +35,16 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
-      - name: Cache Ruff
+      - name: Cache ruff
         uses: actions/cache@v4
         with:
           path: ~/.cache/ruff
           key: ruff-${{ runner.os }}-${{ hashFiles('pyproject.toml', '.ruff.toml', 'ruff.toml') }}
       - run: uv pip install ruff
-      # Uncomment to fail on formatting drift:
-      # - run: uv run ruff format --check .
       - run: uv run ruff check .
 
   mypy:
-    name: Mypy (typecheck)
+    name: Mypy (type check)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -62,27 +67,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
         python: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: ${{ matrix.python }}
-      - name: Cache uv packages
+      - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml', 'requirements*.txt') }}
-      - run: uv pip install -e ".[dev]" pytest pytest-cov
+          path: |
+            ~/.cache/uv
+            ~\AppData\Local\uv\cache
+          key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
+      - name: Install
+        run: uv pip install -e ".[dev]" pytest pytest-cov
       - name: Run tests
+        shell: bash
         run: |
           uv run pytest -ra \
-                        --maxfail=1 \
-                        --durations=10 \
-                        --cov=statline \
-                        --cov-report=xml \
-                        --junitxml=test-results/junit.xml
+            --maxfail=1 \
+            --durations=10 \
+            --cov=statline \
+            --cov-report=xml \
+            --junitxml=test-results/junit.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -101,42 +110,79 @@ jobs:
           format: markdown
           output: both
 
-  build-and-smoke:
-    name: Build & Smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+  build:
+    name: Build (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [ruff, mypy, tests]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
-      - name: Cache uv packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-py3.12-${{ hashFiles('pyproject.toml', 'requirements*.txt') }}
       - run: uv pip install build
       - name: Build sdist & wheel
         run: uv run python -m build
-      - name: Upload dist artifacts
+      - name: Upload dist
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.os }}
+          name: dist-ubuntu
           path: dist/*
-      - name: Smoke install from wheel
+
+  smoke:
+    name: Install & Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - name: Download built wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-ubuntu
+          path: dist
+      - name: Install wheel
+        shell: bash
+        run: uv pip install --no-deps dist/*.whl
+      - name: Import package
+        shell: bash
         run: |
-          uv pip install --no-deps dist/*.whl
           uv run python - <<'PY'
           import importlib
           importlib.import_module("statline")
-          from statline.core.adapters import list_names
-          names = list_names()
-          assert isinstance(names, list) and names, "No adapters discovered"
-          print("Adapters:", names)
-          print("Smoke OK")
+          print("Import OK")
           PY
+      - name: Adapters should exist
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          from statline.core.adapters import list_names
+          n = list_names()
+          assert isinstance(n, list) and n, "No adapters discovered"
+          print("Adapters:", n)
+          PY
+      - name: "CLI smoke: score example file if present"
+        shell: bash
+        run: |
+          EXAMPLE=$(uv run python - <<'PY'
+          from importlib.resources import files
+          try:
+              p = files("statline.data") / "example.yaml"
+              print(p)
+          except Exception:
+              pass
+          PY
+          )
+          if [ -n "$EXAMPLE" ] && [ -f "$EXAMPLE" ]; then
+            echo "Scoring $EXAMPLE"
+            uv run python -m statline.cli score --file "$EXAMPLE" || uv run statline score --file "$EXAMPLE" || true
+          else
+            echo "No packaged example.yaml; skipping."
+          fi

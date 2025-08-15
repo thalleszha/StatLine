@@ -3,12 +3,16 @@ from __future__ import annotations
 import csv
 import sys
 import importlib
+import re
+import io
+import contextlib
 from pathlib import Path
 from typing import (
     Iterable, Optional, Dict, Any, List, Callable, Mapping, IO, cast
 )
 
 import typer
+import click  # Typer is built on Click
 
 try:
     import yaml  # optional for YAML I/O
@@ -20,6 +24,99 @@ from statline.core.adapters import load as load_adapter, list_names
 from statline.core.scoring import calculate_pri  # adapter-driven PRI
 
 app = typer.Typer(no_args_is_help=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Unified banner helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_BANNER_LINE = "=== StatLine — Adapter-Driven Scoring ==="
+_BANNER_REGEX = re.compile(r"^===\s*StatLine\b.*===\s*$")
+
+def _print_banner() -> None:
+    typer.secho(_BANNER_LINE, fg=typer.colors.CYAN, bold=True)
+
+def ensure_banner() -> None:
+    """
+    Print the banner exactly once per process. Store the flag on the ROOT context,
+    so both the app callback and subcommands share it.
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        _print_banner()
+        return
+    root = ctx.find_root()
+    # use root.obj (dict) so it's guaranteed to be shared
+    if root.obj is None:
+        root.obj = {}
+    if not root.obj.get("_statline_banner_shown"):
+        _print_banner()
+        root.obj["_statline_banner_shown"] = True
+
+
+@contextlib.contextmanager
+def suppress_duplicate_banner_stdout():
+    """
+    Wrap sys.stdout to swallow the first banner-like line that interactive_mode()
+    might print, so users don't see two headers.
+    """
+    class _Filter(io.TextIOBase):
+        def __init__(self, underlying):
+            self._u = underlying
+            self._swallowed = False
+            self._buf = ""
+
+        def write(self, s):
+            self._buf += s
+            out = []
+            while True:
+                if "\n" not in self._buf:
+                    break
+                line, self._buf = self._buf.split("\n", 1)
+                if not self._swallowed and _BANNER_REGEX.match(line.strip()):
+                    self._swallowed = True
+                    continue
+                out.append(line + "\n")
+            if out:
+                return self._u.write("".join(out))
+            return 0
+
+        def flush(self):
+            if self._buf:
+                chunk = self._buf
+                self._buf = ""
+                return self._u.write(chunk)
+            return self._u.flush()
+
+        # pass-throughs
+        def fileno(self): return self._u.fileno()
+        def isatty(self): return self._u.isatty()
+
+    orig = sys.stdout
+    filt = _Filter(orig)
+    try:
+        sys.stdout = filt
+        yield
+    finally:
+        try:
+            filt.flush()
+        except Exception:
+            pass
+        sys.stdout = orig
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Root callback: show banner for `statline` with no subcommand
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context) -> None:
+    # make sure root.obj exists so ensure_banner() can use it
+    root = ctx.find_root()
+    if root.obj is None:
+        root.obj = {}
+    ensure_banner()
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -188,8 +285,6 @@ def _lazy_cache_export(guild_id: str) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-
-# ── replace _lazy_cache_context ───────────────────────────────────────────────
 def _lazy_cache_context(guild_id: str) -> Optional[Dict[str, Dict[str, float]]]:
     """
     Try to call statline.core.cache.get_metric_context_ap(guild_id).
@@ -218,7 +313,6 @@ def _lazy_cache_context(guild_id: str) -> Optional[Dict[str, Dict[str, float]]]:
         return safe
     except Exception:
         return None
-
 
 def _lazy_force_refresh(guild_id: str) -> None:
     try:
@@ -268,9 +362,9 @@ def _calc_pri_typed(
 
 @app.command("interactive")
 def interactive() -> None:
-    """Run interactive adapter-driven calculator."""
+    ensure_banner()
     try:
-        interactive_mode()
+        interactive_mode(show_banner=False)
     except (KeyboardInterrupt, EOFError):
         print("\nExiting StatLine.")
         raise typer.Exit(code=0)
@@ -278,7 +372,8 @@ def interactive() -> None:
 @app.command("adapters")
 def adapters_list() -> None:
     """List available adapter keys."""
-    for name in list_names():
+    ensure_banner()
+    for name in sorted(list_names()):
         typer.echo(name)
 
 @app.command("export-csv")
@@ -290,6 +385,7 @@ def export_csv(
     refresh: bool = typer.Option(False, "--refresh/--no-refresh", help="Force a Sheets refresh before export"),
 ) -> None:
     """Explicitly export the guild's mapped metrics to CSV (no scoring)."""
+    ensure_banner()
     _ = load_adapter(adapter)  # validate adapter exists
     rows = _autobuild_stats_csv(out, guild_id=guild_id, refresh=refresh)
     typer.secho(f"Wrote {out} ({len(rows)} rows).", fg=typer.colors.GREEN)
@@ -316,6 +412,7 @@ def score(
     If the input file is missing and --guild-id is provided, the CLI will
     auto-create 'stats.csv' from the DB cache (entities/metrics) and then score it.
     """
+    ensure_banner()
     adp = load_adapter(adapter)
     bucket_weights = _load_bucket_weights(adp, weights, weights_preset)
 

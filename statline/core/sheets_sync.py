@@ -1,17 +1,12 @@
+# statline/services/sheets_sync.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Mapping, Protocol, runtime_checkable, cast
+from typing import Any, Dict, Iterable, Optional, Mapping, Protocol, runtime_checkable, cast
 
-from .guild_manager import get_guild_config, now_ts, GuildConfig
-from .db import get_conn
-from .adapters import supported_adapters, load_adapter  # registry
-
-# Optional: Google Sheets (installed via extras "sheets")
-try:  # soft import; keep types loose to satisfy Pylance when missing
-    import gspread  # type: ignore
-except Exception:  # pragma: no cover
-    gspread = None  # type: ignore
-
+from statline.core.guild_manager import get_guild_config, now_ts, GuildConfig
+from statline.core.db import get_conn
+from statline.core.adapters import supported_adapters, load_adapter  # registry
+from statline.io.sheets import fetch_rows_from_sheets
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Adapter protocol(s): support either map_raw(...) or map_raw_to_metrics(...)
@@ -20,6 +15,7 @@ except Exception:  # pragma: no cover
 @runtime_checkable
 class _MapRawProto(Protocol):
     def map_raw(self, raw: Mapping[str, Any]) -> Dict[str, float]: ...
+
 
 @runtime_checkable
 class _MapRawToMetricsProto(Protocol):
@@ -42,8 +38,10 @@ def _apply_adapter_map(adp: Any, raw: Mapping[str, Any]) -> Dict[str, float]:
 def _normalize_str(v: Any) -> str:
     return str(v).strip()
 
+
 def _fuzzy_key(name: str) -> str:
     return name.lower()
+
 
 def _coerce_float(v: Any) -> Optional[float]:
     if isinstance(v, (int, float)):
@@ -96,33 +94,6 @@ def _ensure_cache_schema() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Sheets I/O (safe; no None credentials passed to constructors)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _get_gspread_client() -> Any | None:  # keep Any to avoid depending on gspread stubs
-    if gspread is None:
-        return None
-    # Prefer service account; falls back to oauth() if available locally.
-    try:
-        return gspread.service_account()  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    try:
-        return gspread.oauth()  # type: ignore[attr-defined]
-    except Exception:
-        return None
-
-def _fetch_rows_from_sheets(sheet_key: str, sheet_tab: str) -> list[dict[str, Any]]:
-    gc = _get_gspread_client()
-    if gc is None:
-        return []
-    sh = gc.open_by_key(sheet_key)
-    ws = sh.worksheet(sheet_tab)
-    rows = ws.get_all_records()  # header → dict keys
-    return rows or []
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Adapter selection (optional sniff)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -157,6 +128,7 @@ def _upsert_entity(guild_id: str, display_name: str, group_name: Optional[str]) 
             (guild_id, fuzzy, display_name, group_name),
         )
     return fuzzy
+
 
 def _upsert_metrics(guild_id: str, fuzzy: str, mapped: Dict[str, Any]) -> int:
     rows: list[tuple[str, str, str, float]] = []
@@ -205,7 +177,7 @@ def sync_guild_sheets(
     if cfg is None or not cfg.sheet_key:
         raise RuntimeError("Guild is not configured. Set sheet_key/sheet_tab first.")
 
-    rows = _fetch_rows_from_sheets(cfg.sheet_key, cfg.sheet_tab or "STATS")
+    rows = fetch_rows_from_sheets(cfg.sheet_key, cfg.sheet_tab or "STATS")
 
     # Even if there are no rows (no client/empty sheet), we still stamp freshness
     # so callers with TTL don't spin. This is intentional.

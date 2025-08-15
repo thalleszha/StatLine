@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "StatLine" }]
 keywords = ["basketball", "analytics", "mvp", "efg", "discord", "google-sheets"]
 
-# CLI needs these at runtime; keep them in core deps for now
+# Runtime deps for CLI and core library
 dependencies = [
   "typer>=0.12",
   "pyyaml>=6",
@@ -48,20 +48,26 @@ discord = [
 # Dev & QA
 dev = [
   "pytest>=7.0",
+  "pytest-cov>=4.1",
   "ruff>=0.5",
   "mypy>=1.6",
   "coverage>=7.2",
-  "types-PyYAML",   # fixes Pylance/mypy for yaml
+  "hypothesis>=6.100",
+  "types-PyYAML",
 ]
 
 [project.scripts]
-# CLI entrypoint (interactive + batch)
+# Keep this if cli.py defines `def main(): app()`
 statline = "statline.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/amillolive/StatLine"
 Repository = "https://github.com/amillolive/StatLine"
 Issues = "https://github.com/amillolive/StatLine/issues"
+
+# ------------------------
+# Tooling configuration
+# ------------------------
 
 [tool.ruff]
 line-length = 100
@@ -82,9 +88,21 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+# Uncomment to fail CI on empty test files:
+# fail_on_empty = true
 
+# ------------------------
+# Hatchling build config
+# ------------------------
+
+# Include the package plus all non-Python assets needed at runtime (YAML, JSON, SQL)
 [tool.hatch.build.targets.wheel]
 packages = ["statline"]
+include = [
+  "statline/data/**/*",                 # example.yaml, max_stats.json, etc.
+  "statline/core/adapters/defs/*",      # bundled adapter definitions
+  "statline/data/migrations/*.sql",     # DB migrations
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
