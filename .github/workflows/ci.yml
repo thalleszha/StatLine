@@ -39,6 +39,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python 3.12
       - name: Cache ruff
         uses: actions/cache@v4
         with:
@@ -56,6 +58,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python 3.12
       - name: Cache mypy
         uses: actions/cache@v4
         with:
@@ -78,6 +82,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: ${{ matrix.python }}
+      - name: Create venv
+        run: uv venv --python ${{ matrix.python }}
       - name: Cache uv
         uses: actions/cache@v4
         with:
@@ -125,6 +131,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python 3.12
       - run: uv pip install build
       - name: Build sdist & wheel
         run: uv run python -m build
@@ -148,6 +156,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python 3.12
       - name: Download built wheel
         uses: actions/download-artifact@v4
         with:
