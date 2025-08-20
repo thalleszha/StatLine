@@ -23,7 +23,7 @@ Rows = List[Row]
 _console: Optional[Any]
 _rich_ok: bool
 try:
-    from rich.console import Console  # type: ignore[import-not-found]
+    from rich.console import Console
     _console = Console()
     _rich_ok = True
 except Exception:
@@ -107,7 +107,7 @@ def _print_timing(T: StageTimes) -> None:
     # Pretty table if Rich is available and we're on a TTY.
     if _rich_ok and _console and sys.stderr.isatty():
         try:
-            from rich.table import Table  # type: ignore[import-not-found]
+            from rich.table import Table
         except Exception:
             return
         tbl = Table(title="Timing (ms)", show_lines=False)
@@ -164,7 +164,8 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
         for i, opt in enumerate(options, 1):
             typer.echo(f"  {i}. {opt}")
         while True:
-            raw = typer.prompt("Select", default=str(default_index + 1)).strip()
+            raw_any = typer.prompt("Select", default=str(default_index + 1))
+            raw = str(raw_any).strip()
             if raw.isdigit():
                 idx = int(raw) - 1
                 if 0 <= idx < len(options):
@@ -239,7 +240,7 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
             # Import class into a local variable instead of reassigning the symbol "Table"
             table_cls: Optional[Any] = None
             try:
-                from rich.table import Table as _RichTable  # type: ignore[import-not-found]
+                from rich.table import Table as _RichTable
                 table_cls = _RichTable
             except Exception:
                 table_cls = None

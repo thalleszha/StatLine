@@ -57,17 +57,9 @@ class AdapterProto(Protocol):
     def map_raw(self, raw: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
 
-class _YamlLike(Protocol):
-    CSafeLoader: Any
-    SafeLoader: Any
-    def load(self, stream: str, *, Loader: Any) -> Any: ...
-    def safe_load(self, stream: str) -> Any: ...
-
-
 # ── optional YAML (prefer C-accelerated loader if present) ───────────────────
 try:
     import yaml as yaml_mod
-    yaml_mod = cast(_YamlLike, yaml_mod)
     _yaml_loader: Optional[Any] = getattr(
         yaml_mod, "CSafeLoader", getattr(yaml_mod, "SafeLoader", None)
     )

@@ -34,7 +34,7 @@ def _coerce_floats(m: Optional[Mapping[str, Any]]) -> Dict[str, float]:
         return out
     for k, v in m.items():
         try:
-            out[str(k)] = float(v)  # type: ignore[arg-type]
+            out[str(k)] = float(v)
         except (TypeError, ValueError):
             # skip invalid entries
             continue

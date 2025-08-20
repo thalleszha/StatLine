@@ -4,7 +4,7 @@ import time
 from typing import Any, Iterator
 
 from .db import get_conn
-from .models import GuildConfig
+from .models import GuildConfig as GuildConfig
 
 # Only these columns can be updated via update_guild_config
 _ALLOWED_UPDATE_FIELDS: frozenset[str] = frozenset({
@@ -167,3 +167,17 @@ def touch_last_sync(guild_id: str) -> None:
 def set_sheet_source(guild_id: str, *, key: str, tab: str = "STATS") -> None:
     """Update the Sheets source (key/tab) atomically."""
     update_guild_config(guild_id, sheet_key=key, sheet_tab=tab)
+
+__all__ = [
+    "GuildConfig",
+    "now_ts",
+    "ensure_schema",
+    "ensure_guild_entry",
+    "get_guild_config",
+    "update_guild_config",
+    "iterate_guilds",
+    "can_force_update_today",
+    "set_forced_update_day",
+    "touch_last_sync",
+    "set_sheet_source",
+]

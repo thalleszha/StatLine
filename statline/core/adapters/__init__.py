@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from types import ModuleType
-from typing import Any, Callable, Iterable, List, Mapping, Protocol, Tuple, cast
+from typing import Any, Callable, Iterable, Mapping, Protocol, cast
 
 from .registry import list_names, load  # re-exported via __all__
 
@@ -33,32 +33,35 @@ _frozen = False  # lower-case so reassignment doesn't trip "constant redefinitio
 def _iter_adapter_modules() -> Iterable[str]:
     """Yield submodule paths under this package (one level)."""
     pkg = importlib.import_module(_PACKAGE)
-    for _finder, name, ispkg in pkgutil.iter_modules(pkg.__path__):  # type: ignore[attr-defined]
+    for _finder, name, ispkg in pkgutil.iter_modules(pkg.__path__):
         if not ispkg:
             yield f"{_PACKAGE}.{name}"
+
+def _as_str_aliases(obj: object) -> tuple[str, ...]:
+    """Materialize obj (tuple/list) into a tuple[str, ...], filtering non-strs."""
+    if isinstance(obj, (list, tuple)):
+        out: list[str] = []
+        for e in cast(Iterable[object], obj):
+            if isinstance(e, str) and e:
+                out.append(e)
+        return tuple(out)
+    return ()
 
 
 def _register_from_module(mod: ModuleType) -> None:
     key = getattr(mod, "KEY", None)
     metrics = getattr(mod, "METRICS", None)
-    if not isinstance(key, str) or not key or not metrics:
+    if not isinstance(key, str) or not key or metrics is None:
         return  # not an adapter module
 
-    _DISCOVERED[key.lower()] = mod.__name__
+    mod_name = mod.__name__
+    _DISCOVERED[key.lower()] = mod_name
 
-    aliases_obj = getattr(mod, "ALIASES", ()) or ()
-
-    # ✅ Narrow first, then materialize. Never call tuple() on Unknown.
-    if isinstance(aliases_obj, tuple):
-        aliases_iter: Tuple[Any, ...] = cast(Tuple[Any, ...], aliases_obj)
-    elif isinstance(aliases_obj, list):
-        aliases_iter = tuple(cast(List[Any], aliases_obj))
-    else:
-        aliases_iter = ()
+    aliases_raw: object = getattr(mod, "ALIASES", ()) or ()
+    aliases_iter: tuple[str, ...] = _as_str_aliases(aliases_raw)
 
     for alias in aliases_iter:
-        if isinstance(alias, str) and alias:
-            _DISCOVERED[alias.lower()] = mod.__name__
+        _DISCOVERED[alias.lower()] = mod_name
 
 
 def _ensure_discovered() -> None:

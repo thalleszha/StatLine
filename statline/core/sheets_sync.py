@@ -1,11 +1,26 @@
 # statline/services/sheets_sync.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, cast, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    Mapping,
+    Optional,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 from statline.core.adapters import load_adapter, supported_adapters  # registry
 from statline.core.db import get_conn
-from statline.core.guild_manager import GuildConfig, get_guild_config, now_ts
+
+# Only import for types; mypy is happy and runtime stays clean
+if TYPE_CHECKING:
+    from statline.core.guild_manager import GuildConfig
+
+from statline.core.guild_manager import get_guild_config, now_ts
 from statline.io.sheets import fetch_rows_from_sheets
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -162,25 +177,18 @@ def sync_guild_sheets(
     adapter_key: Optional[str] = None,
     group_field_candidates: tuple[str, ...] = ("team", "group", "agent", "role"),
     name_field_candidates: tuple[str, ...] = ("display_name", "name", "player", "id"),
+    cfg: GuildConfig | None = None,   # ✅ no quotes
 ) -> int:
     """
     Pull rows from Google Sheets and upsert into adapter-agnostic cache.
-
-    Adapter resolution:
-      - if adapter_key is provided: use it
-      - else try _autodetect_adapter(headers)
-      - else raise
-
-    Returns number of entities upserted.
     """
-    cfg: GuildConfig | None = get_guild_config(guild_id)
+    # compute cfg at call time (also makes it easy to inject a fixture in tests)
+    cfg = cfg or get_guild_config(guild_id)
     if cfg is None or not cfg.sheet_key:
         raise RuntimeError("Guild is not configured. Set sheet_key/sheet_tab first.")
 
     rows = fetch_rows_from_sheets(cfg.sheet_key, cfg.sheet_tab or "STATS")
 
-    # Even if there are no rows (no client/empty sheet), we still stamp freshness
-    # so callers with TTL don't spin. This is intentional.
     if not rows:
         with get_conn() as conn:
             ts = now_ts()
@@ -195,35 +203,30 @@ def sync_guild_sheets(
     if not key:
         raise RuntimeError("Unable to detect adapter for sheet; provide adapter_key explicitly.")
 
-    adp = load_adapter(key)  # runtime module -> satisfies either protocol above
-
+    adp = load_adapter(key)
     _ensure_cache_schema()
 
     upserted_entities = 0
     for raw in rows:
-        # pick a display name
         display = ""
         for f in name_field_candidates:
             if f in raw and str(raw[f]).strip():
                 display = _normalize_str(raw[f])
                 break
         if not display:
-            continue  # skip nameless rows
+            continue
 
-        # optional group
         group_val: Optional[str] = None
         for f in group_field_candidates:
             if f in raw and str(raw[f]).strip():
-                group_val = _normalize_str(raw[f])
+                group_val = _normalize_str(raw[f]) 
                 break
 
-        mapped = _apply_adapter_map(adp, raw)  # <— supports either mapping API
-
+        mapped = _apply_adapter_map(adp, raw)
         fuzzy = _upsert_entity(guild_id, display, group_val)
         _upsert_metrics(guild_id, fuzzy, mapped)
         upserted_entities += 1
 
-    # stamp freshness
     with get_conn() as conn:
         ts = now_ts()
         conn.execute(
