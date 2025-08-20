@@ -86,7 +86,8 @@ pretty = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = "-q"
+# Keep logs useful in CI; junit XML is configured in workflow.
+addopts = "-ra"
 testpaths = ["tests"]
 # Uncomment to fail CI on empty test files:
 # fail_on_empty = true

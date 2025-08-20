@@ -25,6 +25,10 @@ env:
   STATLINE_ENV: "test"
   SKIP_LIVE_SHEETS: "1"
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   ruff:
     name: Ruff (lint)
@@ -79,12 +83,13 @@ jobs:
         with:
           path: |
             ~/.cache/uv
-            ~\AppData\Local\uv\cache
+            ${{ env.LOCALAPPDATA }}\uv\cache
           key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
       - name: Install
-        run: uv pip install -e ".[dev]" pytest pytest-cov
+        run: uv pip install -e ".[dev,sheets]" pytest pytest-cov
+      - name: Prepare test results dir
+        run: mkdir -p test-results
       - name: Run tests
-        shell: bash
         run: |
           uv run pytest -ra \
             --maxfail=1 \
@@ -149,10 +154,8 @@ jobs:
           name: dist-ubuntu
           path: dist
       - name: Install wheel
-        shell: bash
         run: uv pip install --no-deps dist/*.whl
       - name: Import package
-        shell: bash
         run: |
           uv run python - <<'PY'
           import importlib
@@ -160,7 +163,6 @@ jobs:
           print("Import OK")
           PY
       - name: Adapters should exist
-        shell: bash
         run: |
           uv run python - <<'PY'
           from statline.core.adapters import list_names
@@ -169,18 +171,17 @@ jobs:
           print("Adapters:", n)
           PY
       - name: "CLI smoke: score example file if present"
-        shell: bash
         run: |
           EXAMPLE=$(uv run python - <<'PY'
           from importlib.resources import files
+          p = files("statline.data") / "example.yaml"
           try:
-              p = files("statline.data") / "example.yaml"
-              print(p)
+            print(str(p) if p.is_file() else "", end="")
           except Exception:
-              pass
+            print("", end="")
           PY
           )
-          if [ -n "$EXAMPLE" ] && [ -f "$EXAMPLE" ]; then
+          if [ -n "$EXAMPLE" ]; then
             echo "Scoring $EXAMPLE"
             uv run python -m statline.cli score --file "$EXAMPLE" || uv run statline score --file "$EXAMPLE" || true
           else
