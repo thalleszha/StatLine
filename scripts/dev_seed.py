@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import typer
@@ -18,6 +19,11 @@ TEST_GUILD_ID = "dev-guild"
 # ──────────────────────────────────────────────────────────────────────────────
 # IO helpers (YAML/CSV) — same conventions as CLI
 # ──────────────────────────────────────────────────────────────────────────────
+try:
+    import importlib.resources as _resources
+    resources: Optional[ModuleType] = _resources
+except Exception:
+    resources = None
 
 try:
     import yaml

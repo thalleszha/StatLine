@@ -58,15 +58,22 @@ class AdapterProto(Protocol):
 
 
 # ── optional YAML (prefer C-accelerated loader if present) ───────────────────
+class _YamlLike(Protocol):
+    CSafeLoader: Any
+    SafeLoader: Any
+    def load(self, stream: str, *, Loader: Any) -> Any: ...
+    def safe_load(self, stream: str) -> Any: ...
+
+yaml_mod: Optional[_YamlLike]
+_yaml_loader: Optional[Any]
 try:
-    import yaml as yaml_mod
-    _yaml_loader: Optional[Any] = getattr(
-        yaml_mod, "CSafeLoader", getattr(yaml_mod, "SafeLoader", None)
-    )
+    import yaml as _yaml_import
+    yaml_mod = cast(_YamlLike, _yaml_import)
+    _yaml_loader = getattr(_yaml_import, "CSafeLoader", getattr(_yaml_import, "SafeLoader", None))
 except Exception:
     yaml_mod = None
     _yaml_loader = None
-
+    
 # env switch; global default is set by root option below
 STATLINE_DEBUG_TIMING: bool = os.getenv("STATLINE_DEBUG") == "1"
 

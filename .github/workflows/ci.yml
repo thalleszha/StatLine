@@ -70,18 +70,36 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+
       - name: Create venv
         run: uv venv --python 3.12
+
+      # Avoid stale caches causing misleading results; include mypy.ini and OS/Python in the key.
       - name: Cache mypy
         uses: actions/cache@v4
         with:
           path: .mypy_cache
-          key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', '**/*.py') }}
-      - run: uv pip install -e ".[dev]" mypy
-      - run: uv run mypy --strict --ignore-missing-imports .
+          key: mypy-${{ runner.os }}-py3.12-${{ hashFiles('mypy.ini', 'pyproject.toml', '**/*.py') }}
+
+      # Pin mypy so local == CI (adjust the version if you want, just pin it).
+      - name: Install deps
+        run: uv pip install -e ".[dev]" "mypy==1.10.*"
+
+      - name: Print versions
+        run: |
+          uv run python - <<'PY'
+          import sys, mypy
+          print("Python:", sys.version)
+          print("mypy:", mypy.__version__)
+          PY
+
+      # Use module invocation to bypass any broken shebangs
+      - name: Run mypy
+        run: uv run python -m mypy --show-traceback --strict --ignore-missing-imports .
 
   tests:
     name: Tests (${{ matrix.os }} / py${{ matrix.python }})
