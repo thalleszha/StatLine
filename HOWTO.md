@@ -6,14 +6,14 @@
 
 ## 0) Repository Placement
 
-```
+```plaintext
 StatLine/
-  how-to.md        ← this file (top level)
-  statline/
-    core/
-      adapters/
-        defs/
-          example.yaml
+├── how-to.md        ← this file (top level)
+└── statline/
+    └── core/
+        └── adapters/
+            └── defs/
+                └── example.yaml
 ```
 
 ---

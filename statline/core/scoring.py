@@ -1,9 +1,9 @@
 # statline/core/scoring.py
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, asdict
-from typing import Dict, Mapping, Any, Tuple, Optional, List
+from dataclasses import dataclass
+from typing import Dict, Mapping, Any, Optional, List
+from contextlib import nullcontext
 
 from .normalization import clamp01
 from .weights import normalize_weights
@@ -16,50 +16,28 @@ from ..utils.config import (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Small utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _to_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Dataclasses
 # ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
-class PlayerStats:
-    """Legacy hoops-shaped stats. Adapters for other games should not use this."""
-    ppg: float
-    apg: float
-    orpg: float
-    drpg: float
-    spg: float
-    bpg: float
-    fgm: float
-    fga: float
-    tov: float
-
-    @classmethod
-    def from_mapping(cls, m: Mapping[str, Any]) -> "PlayerStats":
-        def f(k: str) -> float:
-            v = m[k]
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                raise ValueError(f"Invalid value for {k!r}: {v!r}")
-        return cls(
-            ppg=f("ppg"), apg=f("apg"), orpg=f("orpg"), drpg=f("drpg"),
-            spg=f("spg"), bpg=f("bpg"), fgm=f("fgm"), fga=f("fga"), tov=f("tov")
-        )
-
-    def as_dict(self) -> Dict[str, float]:
-        return asdict(self)  # dict[str, float]
-
-
-@dataclass(frozen=True)
 class ScoreResult:
-    score: float                      # final score (0..99)
-    components: Dict[str, float]      # normalized 0..1 per metric
-    weights: Dict[str, float]         # unit (L1) weights used (sign-preserving)
-    # Optional extras (legacy hoops)
-    used_ratio: Optional[str] = None  # which TOV ratio was used
-    aefg: Optional[float] = None      # raw approx eFG (not normalized)
+    """Adapter-driven result container (0..99 score, components 0..1, unit-L1 weights)."""
+    score: float
+    components: Dict[str, float]
+    weights: Dict[str, float]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Team factor, efficiency helpers (legacy-friendly)
+# Team factor
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _team_factor(wins: int, losses: int) -> float:
@@ -68,26 +46,6 @@ def _team_factor(wins: int, losses: int) -> float:
     adj = max(0.0, win_pct - 0.50)
     tf = 1 + TEAM_WEIGHT * (adj / 0.50)
     return min(max(tf, TEAM_FACTOR_MIN), TEAM_FACTOR_MAX)
-
-def _turnover_efficiency(points: float, assists: float, turnovers: float, ratio_mode: str = "dynamic") -> Tuple[float, str]:
-    turnovers = max(float(turnovers), 1e-6)
-    if ratio_mode == "ast/tov":
-        ratio, used = assists / turnovers, "ast/tov"
-    elif ratio_mode == "pts/tov":
-        ratio, used = points / turnovers, "pts/tov"
-    else:
-        ratio, used = ((assists / turnovers), "ast/tov (dynamic)") if assists >= 10 else ((points / turnovers), "pts/tov (dynamic)")
-    ratio = min(ratio, 8.0)
-    eff = 1 / (1 + math.exp(-0.9 * (ratio - 2.0)))
-    return eff, used
-
-def _approx_efg(ppg: float, fgm: float, fga: float) -> Tuple[float, float]:
-    if fga <= 0 or fgm <= 0:
-        return 0.0, 0.0
-    est_3pm = max(0.0, min(fgm, ppg - 2.0 * fgm))
-    actual = (fgm + 0.5 * est_3pm) / fga
-    personal_max = 1.0 + 0.5 * (est_3pm / fgm)  # 1.0 → 1.5
-    return actual, clamp01(actual / personal_max)
 
 def _safe_norm(value: float, cap: float) -> float:
     cap = float(cap)
@@ -109,7 +67,7 @@ def caps_from_context(
     """
     Build caps map for PRI-AP:
       - positive metrics: cap = leader
-      - inverted metrics: cap = |floor - leader| (we'll give negative weights)
+      - inverted metrics: cap = |floor - leader| (negative weight applied later)
     If context is missing a metric, fall back to 1.0 (benign) to avoid div0.
     """
     caps: Dict[str, float] = {}
@@ -119,8 +77,8 @@ def caps_from_context(
         if not info:
             caps[k] = 1.0
             continue
-        leader = float(info.get("leader", 1.0))
-        floor  = float(info.get("floor", 0.0))
+        leader = _to_float(info.get("leader", 1.0), 1.0)
+        floor  = _to_float(info.get("floor", 0.0), 0.0)
         if inv.get(k, False):
             caps[k] = max(1e-6, abs(floor - leader))
         else:
@@ -142,28 +100,40 @@ def per_metric_weights_from_buckets(
         per_metric[m] = bw / n
     return per_metric
 
-def _batch_context_from_rows(rows: List[Dict[str, Any]], metric_keys: List[str], invert: Dict[str, bool]) -> Dict[str, Dict[str, float]]:
+def _batch_context_from_rows(
+    rows: List[Dict[str, Any]],
+    metric_keys: List[str],
+    invert: Dict[str, bool],
+) -> Dict[str, Dict[str, float]]:
     """Fallback when DB/Sheets context is unavailable: derive leader/floor from the batch."""
     vals: Dict[str, List[float]] = {k: [] for k in metric_keys}
     for r in rows:
         for k in metric_keys:
             v = r.get(k)
+            if v is None:
+                continue
             try:
-                if v is not None:
-                    vals[k].append(float(v))
+                vals[k].append(float(v))
             except Exception:
                 pass
+
     ctx: Dict[str, Dict[str, float]] = {}
     for k in metric_keys:
-        xs = sorted(vals[k])
+        xs = vals[k]
         if not xs:
             # benign defaults
-            ctx[k] = {"leader": 1.0, "floor": 0.0} if not invert.get(k, False) else {"leader": 0.0, "floor": 1.0}
+            if invert.get(k, False):
+                ctx[k] = {"leader": 0.0, "floor": 1.0}
+            else:
+                ctx[k] = {"leader": 1.0, "floor": 0.0}
             continue
+
+        lo = min(xs)
+        hi = max(xs)
         if invert.get(k, False):
-            ctx[k] = {"leader": xs[0], "floor": xs[-1]}   # lower is better
+            ctx[k] = {"leader": lo, "floor": hi}   # lower is better
         else:
-            ctx[k] = {"leader": xs[-1], "floor": xs[0]}   # higher is better
+            ctx[k] = {"leader": hi, "floor": lo}   # higher is better
     return ctx
 
 def _caps_from_clamps(
@@ -178,10 +148,11 @@ def _caps_from_clamps(
     caps: Dict[str, float] = {}
     for m in getattr(adapter, "metrics", []):
         lower = upper = None
-        if getattr(m, "clamp", None):
+        clamp = getattr(m, "clamp", None)
+        if clamp:
             try:
-                lower = float(m.clamp[0])
-                upper = float(m.clamp[1])
+                lower = _to_float(clamp[0]) if clamp else None
+                upper = _to_float(clamp[1]) if clamp else None
             except Exception:
                 lower = upper = None
 
@@ -196,7 +167,7 @@ def _caps_from_clamps(
     return caps
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Generic PRI kernel (single-row). Internal helper.
+# PRI kernel (single-row)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _pri_kernel_single(
@@ -217,14 +188,18 @@ def _pri_kernel_single(
 
     comps: Dict[str, float] = {}
     wsum = 0.0
+    mget = metrics.get
+    cget = caps.get
     for k, w in unit_w.items():
-        norm = _safe_norm(float(metrics.get(k, 0.0)), float(caps.get(k, 0.0)))
+        norm = _safe_norm(_to_float(mget(k, 0.0)), _to_float(cget(k, 0.0), 1.0))
         comps[k] = norm
         wsum += norm * w
 
-    base = (M_SCALE if scale == 100.0 else scale) * wsum + M_OFFSET
-    tf = _team_factor(team_wins, team_losses) if apply_team_factor else 1.0
-    final = max(0.0, min(base * tf, clamp_upper))
+    base_scale = M_SCALE if scale == 100.0 else scale
+    base = base_scale * wsum + M_OFFSET
+    if apply_team_factor:
+        base *= _team_factor(team_wins, team_losses)
+    final = max(0.0, min(base, clamp_upper))
     return ScoreResult(score=final, components=comps, weights=dict(unit_w))
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -239,192 +214,158 @@ def calculate_pri(
     team_losses: int = 0,
     weights_override: Optional[Dict[str, float]] = None,
     context: Optional[Dict[str, Dict[str, float]]] = None,
+    caps_override: Optional[Dict[str, float]] = None,   # direct caps map {metric: cap}
+    _timing: Optional[Any] = None,                      # StageTimes or None
 ) -> List[Dict[str, Any]]:
     """
     Fully dynamic PRI (0–99), driven by adapter specs.
-    Returns list of dicts with pri, pri_raw, bucket scores, components, weights, context_used.
+    Precedence for caps:
+      1) caps_override (highest)
+      2) adapter clamps (when single-row and no context)
+      3) batch/external context
     """
-    # 1) Collect spec info
-    metric_keys = [m.key for m in adapter.metrics]
-    metric_to_bucket: Dict[str, str] = {m.key: m.bucket for m in adapter.metrics}
-    invert_map: Dict[str, bool] = {m.key: bool(m.invert) for m in adapter.metrics}
+    T = _timing
+
+    # 1) Collect spec info from adapter
+    with (T.stage("spec") if T else nullcontext()):
+        metrics_spec = getattr(adapter, "metrics", [])
+        metric_keys = [m.key for m in metrics_spec]
+        metric_to_bucket: Dict[str, str] = {m.key: m.bucket for m in metrics_spec}
+        invert_map: Dict[str, bool] = {m.key: bool(m.invert) for m in metrics_spec}
 
     # 2) Inject efficiency channels as derived metrics
-    eff_list = list(getattr(adapter, "efficiency", []) or [])
-    extended_rows: List[Dict[str, Any]] = []
-    for raw in mapped_rows:
-        r: Dict[str, Any] = dict(raw)
-        for eff in eff_list:
-            make = max(0.0, float(adapter.eval_expr(eff.make, raw)))
-            att = max(1.0, float(adapter.eval_expr(eff.attempt, raw)))
-            pct = make / att
-            r[eff.key] = clamp01(pct)
-            if eff.key not in metric_to_bucket:
-                metric_to_bucket[eff.key] = eff.bucket
-                invert_map[eff.key] = False
-                metric_keys.append(eff.key)
-        extended_rows.append(r)
+    with (T.stage("inject_eff") if T else nullcontext()):
+        eff_list = list(getattr(adapter, "efficiency", []) or [])
+        extended_rows: List[Dict[str, Any]] = []
+
+        eval_expr = getattr(adapter, "eval_expr", None)
+        if not callable(eval_expr):
+            raise TypeError("Adapter must implement eval_expr(expr, row)")
+
+        for raw in mapped_rows:
+            r: Dict[str, Any] = dict(raw)
+            for eff in eff_list:
+                make = max(0.0, _to_float(eval_expr(eff.make, raw), 0.0))
+                att  = max(1.0, _to_float(eval_expr(eff.attempt, raw), 1.0))
+                pct  = make / att
+                r[eff.key] = clamp01(pct)
+                if eff.key not in metric_to_bucket:
+                    metric_to_bucket[eff.key] = eff.bucket
+                    invert_map[eff.key] = False
+                    metric_keys.append(eff.key)
+            extended_rows.append(r)
 
     # 3) Resolve context (leaders/floors) & build caps
-    if context is None and len(extended_rows) == 1:
-        # Interactive single-row: use adapter clamps for declared metrics...
-        caps = _caps_from_clamps(adapter, invert_map)
-        # ...and ensure injected efficiency metrics cap to 1.0
-        for eff in eff_list:
-            if eff.key not in caps:
-                caps[eff.key] = 1.0
-        # (for transparency)
-        ctx = {k: {"leader": caps[k], "floor": 0.0} for k in caps.keys()}
-        context_used = "clamps"
-    else:
-        ctx = context or _batch_context_from_rows(extended_rows, metric_keys, invert_map)
-        caps = caps_from_context(metric_keys, ctx, invert=invert_map)
-        context_used = "batch" if context is None else "external"
+    with (T.stage("caps") if T else nullcontext()):
+        if caps_override:
+            # Highest precedence: explicit override
+            caps = {str(k): max(1e-6, float(v)) for k, v in caps_override.items()}
+            # Benign context stub for transparency/debug
+            ctx = {k: {"leader": caps[k], "floor": 0.0} for k in caps.keys()}
+            context_used = "caps_override"
+        elif context is None and len(extended_rows) == 1:
+            # Single-row interactive: prefer adapter clamps
+            caps = _caps_from_clamps(adapter, invert_map)
+            for eff in eff_list:
+                caps.setdefault(eff.key, 1.0)
+            ctx = {k: {"leader": caps[k], "floor": 0.0} for k in caps.keys()}
+            context_used = "clamps"
+        else:
+            # Batch or explicit external context
+            ctx = context or _batch_context_from_rows(extended_rows, metric_keys, invert_map)
+            caps = caps_from_context(metric_keys, ctx, invert=invert_map)
+            context_used = "batch" if context is None else "external"
 
     # 4) Bucket weights → per-metric weights; flip sign for inverted metrics
-    bucket_weights = dict(weights_override or getattr(adapter, "weights", {}).get("pri", {}) or {})
-    per_metric_weights = per_metric_weights_from_buckets(metric_to_bucket, bucket_weights)
-    for k, inv in invert_map.items():
-        if inv and k in per_metric_weights:
-            per_metric_weights[k] = -abs(per_metric_weights[k])
-
-    # Identify which metrics actually contribute (non-zero absolute weight)
-    scored_metrics = {k for k, w in per_metric_weights.items() if abs(w) > 1e-12}
-
-    # 5) Score each row and compute per-bucket averages for explainability
-    out: List[Dict[str, Any]] = []
-    for r in extended_rows:
-        res = _pri_kernel_single(
-            metrics=r,
-            caps=caps,
-            weights=per_metric_weights,
-            team_wins=team_wins,
-            team_losses=team_losses,
-            apply_team_factor=True,
-            scale=100.0,
-            clamp_upper=99.0,
+    with (T.stage("weights") if T else nullcontext()):
+        bucket_weights = dict(
+            weights_override or getattr(adapter, "weights", {}).get("pri", {}) or {}
         )
+        per_metric_weights = per_metric_weights_from_buckets(metric_to_bucket, bucket_weights)
+        for k, inv in invert_map.items():
+            if inv and k in per_metric_weights:
+                per_metric_weights[k] = -abs(per_metric_weights[k])
+        scored_metrics = {k for k, w in per_metric_weights.items() if abs(w) > 1e-12}
 
-        # Per-bucket aggregation (mean of component scores inside each bucket),
-        # but only over scored metrics to avoid zero-weight pollution (e.g., fgm/fga aux inputs).
-        bucket_scores: Dict[str, float] = {b: 0.0 for b in getattr(adapter, "buckets", {}).keys()}
-        bucket_counts: Dict[str, int] = {b: 0 for b in getattr(adapter, "buckets", {}).keys()}
-        for k, v in res.components.items():
-            if k not in scored_metrics:
-                continue
-            b = metric_to_bucket.get(k)
-            if b is None:
-                continue
-            bucket_scores[b] += v
-            bucket_counts[b] += 1
-        # Average and drop empty buckets (those with no scored metrics)
-        for b in list(bucket_scores.keys()):
-            c = bucket_counts[b]
-            bucket_scores[b] = (bucket_scores[b] / c) if c else 0.0
-            if c == 0:
-                bucket_scores.pop(b, None)
-
-        # Normalize raw score back to 0–1 using configured scale/offset
+    # 5) Score each row and compute per-bucket averages
+    with (T.stage("score_rows") if T else nullcontext()):
+        out: List[Dict[str, Any]] = []
         denom = max(1e-6, float(M_SCALE))
-        pri_raw = clamp01((res.score - float(M_OFFSET)) / denom)
+        buckets_def = getattr(adapter, "buckets", {})
+        bucket_keys = list(buckets_def.keys())
 
-        # Also trim components to scored metrics for cleaner "Top components"
-        scored_components = {k: v for k, v in res.components.items() if k in scored_metrics}
+        for r in extended_rows:
+            res = _pri_kernel_single(
+                metrics=r,
+                caps=caps,
+                weights=per_metric_weights,
+                team_wins=team_wins,
+                team_losses=team_losses,
+                apply_team_factor=True,
+                scale=100.0,
+                clamp_upper=99.0,
+            )
 
-        out.append({
-            "pri": int(round(res.score)),
-            "pri_raw": pri_raw,
-            "buckets": bucket_scores,
-            "components": scored_components,
-            "weights": res.weights,  # already unit-L1
-            "context_used": context_used,
-        })
+            # Per-bucket aggregation over scored metrics only
+            bucket_scores: Dict[str, float] = {b: 0.0 for b in bucket_keys}
+            bucket_counts: Dict[str, int] = {b: 0 for b in bucket_keys}
+            for k, v in res.components.items():
+                if k not in scored_metrics:
+                    continue
+                b = metric_to_bucket.get(k)
+                if b is None:
+                    continue
+                bucket_scores[b] += v
+                bucket_counts[b] += 1
+            for b in list(bucket_scores.keys()):
+                c = bucket_counts[b]
+                if c:
+                    bucket_scores[b] /= c
+                else:
+                    bucket_scores.pop(b, None)
+
+            pri_raw = clamp01((res.score - float(M_OFFSET)) / denom)
+            scored_components = {k: v for k, v in res.components.items() if k in scored_metrics}
+
+            out.append({
+                "pri": int(round(res.score)),
+                "pri_raw": pri_raw,
+                "buckets": bucket_scores,
+                "components": scored_components,
+                "weights": res.weights,
+                "context_used": context_used,
+            })
 
     return out
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Legacy hoops API (kept for backward compatibility)
+# Single-row convenience
 # ──────────────────────────────────────────────────────────────────────────────
 
-def calculate_scores(
-    stats: Mapping[str, float],
+def calculate_pri_single(
+    mapped_row: Mapping[str, Any],
+    adapter: Any,
+    *,
     team_wins: int = 0,
     team_losses: int = 0,
-    ratio_mode: str = "dynamic",
-    mode: str = "mvp_score",
-    role: str = "wing",
-    max_stats: Optional[Mapping[str, float]] = None,
-    *,
-    weights: Optional[Mapping[str, float]] = None,
-) -> Tuple[float, str, float, Dict[str, float], Dict[str, float]]:
-    aefg_raw, aefg_norm = _approx_efg(stats.get("ppg", 0.0), stats.get("fgm", 0.0), stats.get("fga", 0.0))
-    tov_eff, used_ratio = _turnover_efficiency(stats.get("ppg", 0.0), stats.get("apg", 0.0), stats.get("tov", 0.0), ratio_mode)
-
-    legacy_metrics: Dict[str, float] = {
-        "ppg": stats.get("ppg", 0.0),
-        "apg": stats.get("apg", 0.0),
-        "orpg": stats.get("orpg", 0.0),
-        "drpg": stats.get("drpg", 0.0),
-        "spg": stats.get("spg", 0.0),
-        "bpg": stats.get("bpg", 0.0),
-        "aefg": aefg_norm,
-        "tov_eff": tov_eff,
-    }
-
-    ms = max_stats or {
-        "ppg": 41.0, "apg": 18.0, "orpg": 7.0, "drpg": 8.0,
-        "spg": 5.0,  "bpg": 5.0,  "aefg": 1.0, "tov_eff": 1.0,
-    }
-
-    default_weights: Dict[str, float] = {
-        "ppg": 0.33, "apg": 0.20, "orpg": 0.06, "drpg": 0.09,
-        "spg": 0.16, "bpg": 0.10, "aefg": 0.10, "tov_eff": 0.06,
-    }
-    use_weights = dict(weights or default_weights)
-
-    result = _pri_kernel_single(
-        metrics=legacy_metrics,
-        caps=ms,
-        weights=use_weights,
+    weights_override: Optional[Dict[str, float]] = None,
+    context: Optional[Dict[str, Dict[str, float]]] = None,
+    caps_override: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Adapter-bound single-row PRI. Uses caps_override > clamps > context precedence."""
+    rows = calculate_pri(
+        [dict(mapped_row)],
+        adapter,
         team_wins=team_wins,
         team_losses=team_losses,
-        apply_team_factor=True,
-        scale=100.0,
-        clamp_upper=99.0,
+        weights_override=weights_override,
+        context=context,
+        caps_override=caps_override,
     )
-
-    return result.score, used_ratio, aefg_raw, result.components, result.weights
-
-
-def calculate_scores_dc(
-    stats: PlayerStats,
-    team_wins: int = 0,
-    team_losses: int = 0,
-    ratio_mode: str = "dynamic",
-    mode: str = "mvp_score",
-    role: str = "wing",
-    max_stats: Optional[Mapping[str, float]] = None,
-    *,
-    weights: Optional[Mapping[str, float]] = None,
-) -> ScoreResult:
-    final, used_ratio, aefg_val, comps, w = calculate_scores(
-        stats.as_dict(),
-        team_wins=team_wins,
-        team_losses=team_losses,
-        ratio_mode=ratio_mode,
-        mode=mode,
-        role=role,
-        max_stats=max_stats,
-        weights=weights,
-    )
-    return ScoreResult(score=final, components=comps, weights=w, used_ratio=used_ratio, aefg=aefg_val)
-
+    return rows[0]
 
 __all__ = [
-    "PlayerStats",
     "ScoreResult",
     "calculate_pri",
-    "calculate_scores",
-    "calculate_scores_dc",
+    "calculate_pri_single",
 ]

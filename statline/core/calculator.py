@@ -1,10 +1,13 @@
+# statline/core/calculator.py
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional, Mapping, Callable, Iterable, cast, Tuple
+import os, sys
+from typing import Dict, Any, List, Optional, Mapping, Callable, cast, Tuple
+import typer
 
 from .adapters import list_names, load as load_adapter
 from .scoring import calculate_pri
-import typer
+from statline.utils.timing import StageTimes
 
 try:
     from rich.console import Console
@@ -14,17 +17,13 @@ try:
 except Exception:
     _RICH_OK = False
     _console = None  # type: ignore[assignment]
-
+    Table = None     # type: ignore[assignment]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Input helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _prompt_float_strict(name: str) -> float:
-    """
-    Prompt until a valid float is entered. Supports comma decimals.
-    Empty input => 0.0.
-    """
     while True:
         s = input(f"{name}: ").strip()
         if not s:
@@ -35,9 +34,6 @@ def _prompt_float_strict(name: str) -> float:
             print("  Enter a number (e.g., 0.7) or leave blank for 0.")
 
 def _sanitize_numeric_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, Any]:
-    """
-    Strip and coerce numeric-like metric values; leave obviously non-numeric fields as-is.
-    """
     numeric_metrics: Dict[str, Any] = {}
     for k, v in raw_metrics.items():
         if isinstance(v, str):
@@ -49,16 +45,11 @@ def _sanitize_numeric_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, Any]:
                 numeric_metrics[k] = float(vv.replace(",", "."))
                 continue
             except ValueError:
-                # keep non-numeric string as-is (e.g., free-text labels)
                 pass
         numeric_metrics[k] = v
     return numeric_metrics
 
 def _get_mapper(adapter: Any) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    """
-    Return the adapter's mapping function with a tolerant signature.
-    Prefer map_raw, else map_raw_to_metrics.
-    """
     fn: Any = getattr(adapter, "map_raw", None)
     if not callable(fn):
         fn = getattr(adapter, "map_raw_to_metrics", None)
@@ -67,10 +58,6 @@ def _get_mapper(adapter: Any) -> Callable[[Mapping[str, Any]], Mapping[str, Any]
     return cast(Callable[[Mapping[str, Any]], Mapping[str, Any]], fn)
 
 def safe_map_raw(adapter: Any, raw_metrics: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Wrap the adapter's map function with input sanitation and SyntaxError debugging.
-    Ensures numeric metrics are coerced before any eval-like paths.
-    """
     mapper = _get_mapper(adapter)
     numeric_metrics = _sanitize_numeric_metrics(raw_metrics)
     try:
@@ -86,15 +73,34 @@ def safe_map_raw(adapter: Any, raw_metrics: Dict[str, Any]) -> Dict[str, Any]:
         print("============================\n")
         raise
 
+def _print_timing(T: StageTimes) -> None:
+    if not T.items:
+        return
+    total = sum(ms for _, ms in T.items)
+    parts = ", ".join(f"{name} {ms:.2f}" for name, ms in T.items)
+    print(f"\n⏱ {total:.2f} ms total ({parts})", file=sys.stderr)
+
+    if _RICH_OK and _console and sys.stderr.isatty():
+        from rich.table import Table  # local import keeps Pylance happy
+        tbl = Table(title="Timing (ms)", show_lines=False)
+        tbl.add_column("Stage", style="bold")
+        tbl.add_column("ms", justify="right")
+        for name, ms in T.items:
+            tbl.add_row(name, f"{ms:.2f}")
+        tbl.add_row("—", "—")
+        tbl.add_row("TOTAL", f"{total:.2f}")
+        _console.print(tbl)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Interactive
 # ──────────────────────────────────────────────────────────────────────────────
 
-def interactive_mode(*, show_banner: bool = True) -> None:
+def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = None) -> None:
     """
-    Adapter-driven interactive scoring with Typer-style prompts and output.
-    Set show_banner=False when called from the Typer CLI to avoid double headers.
+    Adapter-driven interactive scoring with prompts and formatted output.
     """
+    from contextlib import nullcontext
+
     def banner() -> None:
         typer.secho("=== StatLine — Adapter-Driven Scoring ===", fg=typer.colors.CYAN, bold=True)
 
@@ -122,9 +128,6 @@ def interactive_mode(*, show_banner: bool = True) -> None:
                 typer.secho("  Enter a number (e.g., 0.7).", fg=typer.colors.RED)
 
     def menu_select(title: str, options: List[str], default_index: int = 0) -> str:
-        """
-        Minimal Typer-style numeric selector. Returns the chosen string.
-        """
         if not options:
             raise typer.BadParameter(f"No options for {title}")
         typer.secho(title, fg=typer.colors.MAGENTA, bold=True)
@@ -136,7 +139,6 @@ def interactive_mode(*, show_banner: bool = True) -> None:
                 idx = int(raw) - 1
                 if 0 <= idx < len(options):
                     return options[idx]
-            # also allow direct text entry (exact match)
             if raw in options:
                 return raw
             typer.secho("  Invalid selection. Choose a number from the list or an exact option.",
@@ -160,7 +162,6 @@ def interactive_mode(*, show_banner: bool = True) -> None:
                     out[k] = float(s)
                     continue
                 except ValueError:
-                    # keep non-numeric text (e.g., labels)
                     pass
             out[k] = v
         return out
@@ -209,7 +210,8 @@ def interactive_mode(*, show_banner: bool = True) -> None:
         buckets = res.get("buckets", {}) or {}
         comps = res.get("components", {}) or {}
 
-        if _RICH_OK and _console:
+        if _RICH_OK and _console and Table is not None:
+            t = None
             if buckets:
                 t = Table(title="Buckets", show_lines=False)
                 t.add_column("Bucket", style="bold")
@@ -231,7 +233,6 @@ def interactive_mode(*, show_banner: bool = True) -> None:
                         t.add_row(str(k), str(v))
                 _console.print(t)
         else:
-            # Plain fallback
             if buckets:
                 typer.secho("\nBuckets:", bold=True)
                 for b, v in buckets.items():
@@ -272,41 +273,46 @@ def interactive_mode(*, show_banner: bool = True) -> None:
 
             display_name = typer.prompt("Display Name (optional)", default="").strip()
 
-            try:
-                mapper = get_mapper(adp)
-                mapped_any = mapper(sanitize_numeric(raw_metrics))
-                mapped = dict(mapped_any)
-            except Exception as e:
-                typer.secho(f"Mapping error: {e}", fg=typer.colors.RED)
-                continue
+            timing_enabled = (show_timing is True) or (
+                show_timing is None and (os.getenv("STATLINE_DEBUG") == "1" or os.getenv("STATLINE_TIMING") == "1")
+            )
+            T = StageTimes() if timing_enabled else None
 
             try:
-                results = calculate_pri(
-                    [mapped],
-                    adapter=adp,
-                    team_wins=wins,
-                    team_losses=losses,
-                    weights_override=weights_override,
-                    context=None,
-                )
+                with (T.stage("sanitize_map") if T else nullcontext()):
+                    mapper = get_mapper(adp)
+                    mapped_any = mapper(sanitize_numeric(raw_metrics))
+                    mapped = dict(mapped_any)
+
+                with (T.stage("score") if T else nullcontext()):
+                    results = calculate_pri(
+                        [mapped],
+                        adapter=adp,
+                        team_wins=wins,
+                        team_losses=losses,
+                        weights_override=weights_override,
+                        context=None,
+                        _timing=T,  # inner-stage breakdown
+                    )
+
+                with (T.stage("render") if T else nullcontext()):
+                    name = display_name or "(unnamed)"
+                    render_result(name, adapter_default or adapter_key, results[0])
+
             except Exception as e:
-                typer.secho(f"Scoring error: {e}", fg=typer.colors.RED)
+                typer.secho(f"Error: {e}", fg=typer.colors.RED)
                 continue
+            finally:
+                if T:
+                    _print_timing(T)
 
-            name = display_name or "(unnamed)"
-            render_result(name, adapter_default or adapter_key, results[0])
-
-            # Navigation
             choice = menu_select("Next step:", ["Next row", "Change adapter", "Exit"], default_index=0)
             if choice == "Change adapter":
                 break
             if choice == "Exit":
                 typer.echo("\nExiting StatLine.")
                 return
-            # else: loop for next row with same adapter
 
-
-# Make runnable directly if desired
 if __name__ == "__main__":
     try:
         interactive_mode()
