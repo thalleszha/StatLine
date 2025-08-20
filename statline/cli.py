@@ -1,4 +1,3 @@
-# statline/cli.py
 from __future__ import annotations
 
 # ── stdlib ────────────────────────────────────────────────────────────────────
@@ -9,8 +8,22 @@ import io
 import os
 import re
 import sys
+from collections.abc import Mapping as AbcMapping  # runtime checks
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, Iterable, List, Mapping, Optional, cast
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    Generator,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    TextIO,
+    cast,
+)
 
 # ── third-party ───────────────────────────────────────────────────────────────
 import click  # Typer is built on Click
@@ -21,17 +34,49 @@ from statline.core.adapters import list_names
 from statline.core.adapters import load as load_adapter
 from statline.core.calculator import interactive_mode
 from statline.core.scoring import calculate_pri  # adapter-driven PRI
-from statline.utils.timing import StageTimes
+from statline.utils.timing import StageTimes  # runtime import
+
+
+# -- local typing view of StageTimes (for Pyright only) -----------------------
+class _StageTimesProto(Protocol):
+    items: List[tuple[str, float]]
+    def stage(self, name: str) -> ContextManager[None]: ...
+
+# ── typing helpers (reduce "Unknown" noise) ───────────────────────────────────
+Row = Dict[str, Any]
+Rows = List[Row]
+Context = Dict[str, Dict[str, float]]
+AdapterMappingFn = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+
+
+class AdapterProto(Protocol):
+    """Minimal surface we rely on from adapters."""
+    KEY: str
+
+    def map_raw_to_metrics(self, raw: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def map_raw(self, raw: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class _YamlLike(Protocol):
+    CSafeLoader: Any
+    SafeLoader: Any
+    def load(self, stream: str, *, Loader: Any) -> Any: ...
+    def safe_load(self, stream: str) -> Any: ...
+
 
 # ── optional YAML (prefer C-accelerated loader if present) ───────────────────
 try:
-    import yaml as yaml_mod  # type: ignore[import-not-found]
-    _YAML_LOADER = getattr(yaml_mod, "CSafeLoader", getattr(yaml_mod, "SafeLoader", None))
+    import yaml as yaml_mod
+    yaml_mod = cast(_YamlLike, yaml_mod)
+    _yaml_loader: Optional[Any] = getattr(
+        yaml_mod, "CSafeLoader", getattr(yaml_mod, "SafeLoader", None)
+    )
 except Exception:
-    yaml_mod = None  # type: ignore[assignment]
-    _YAML_LOADER = None
+    yaml_mod = None
+    _yaml_loader = None
 
-STATLINE_DEBUG_TIMING = os.getenv("STATLINE_DEBUG") == "1"
+# env switch; global default is set by root option below
+STATLINE_DEBUG_TIMING: bool = os.getenv("STATLINE_DEBUG") == "1"
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -39,12 +84,14 @@ app = typer.Typer(no_args_is_help=True)
 # Unified banner helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-_BANNER_LINE = "=== StatLine — Adapter-Driven Scoring ==="
+_BANNER_LINE: str = "=== StatLine — Adapter-Driven Scoring ==="
 _BANNER_REGEX = re.compile(r"^===\s*StatLine\b.*===\s*$")
 
 
 def _print_banner() -> None:
-    typer.secho(_BANNER_LINE, fg=typer.colors.CYAN, bold=True)
+    # typer.colors.* is untyped in some stubs; keep fg as Any to avoid unknown-member noise
+    fg: Any = getattr(typer.colors, "CYAN", None)
+    typer.secho(_BANNER_LINE, fg=fg, bold=True)
 
 
 def ensure_banner() -> None:
@@ -61,16 +108,16 @@ def ensure_banner() -> None:
 
 
 @contextlib.contextmanager
-def suppress_duplicate_banner_stdout():
+def suppress_duplicate_banner_stdout() -> Generator[None, None, None]:
     class _Filter(io.TextIOBase):
-        def __init__(self, underlying):
-            self._u = underlying
-            self._swallowed = False
-            self._buf = ""
+        def __init__(self, underlying: TextIO) -> None:
+            self._u: TextIO = underlying
+            self._swallowed: bool = False
+            self._buf: str = ""
 
-        def write(self, s):
+        def write(self, s: str) -> int:
             self._buf += s
-            out = []
+            out: List[str] = []
             while True:
                 if "\n" not in self._buf:
                     break
@@ -83,20 +130,26 @@ def suppress_duplicate_banner_stdout():
                 return self._u.write("".join(out))
             return 0
 
-        def flush(self):
+        def flush(self) -> None:
             if self._buf:
                 chunk = self._buf
                 self._buf = ""
-                return self._u.write(chunk)
-            return self._u.flush()
+                self._u.write(chunk)
+            self._u.flush()
 
-        def fileno(self): return self._u.fileno()
-        def isatty(self): return self._u.isatty()
+        def fileno(self) -> int:
+            return self._u.fileno()
 
-    orig = sys.stdout
+        def isatty(self) -> bool:
+            try:
+                return self._u.isatty()
+            except Exception:
+                return False
+
+    orig: TextIO = sys.stdout
     filt = _Filter(orig)
     try:
-        sys.stdout = filt
+        sys.stdout = cast(TextIO, filt)
         yield
     finally:
         try:
@@ -106,23 +159,54 @@ def suppress_duplicate_banner_stdout():
         sys.stdout = orig
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Root callback
+# Root callback (global options + "no subcommand" UX)
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _resolve_timing(ctx: typer.Context, local: Optional[bool]) -> bool:
+    """Prefer a command-local --timing value; else inherit from root; else env."""
+    if local is not None:
+        return local
+    try:
+        root = ctx.find_root()
+        if root.obj and "timing" in root.obj:
+            return bool(root.obj["timing"])
+    except Exception:
+        pass
+    return STATLINE_DEBUG_TIMING
 
 
 @app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context) -> None:
+def _root( # pyright: ignore[reportUnusedFunction]
+    ctx: typer.Context,
+    timing: bool = typer.Option(
+        True,  # default ON at the root; subcommands can override
+        "--timing/--no-timing",
+        help="Show per-stage timing summaries (default: on; use --no-timing to hide).",
+    ),
+) -> None:
+    """Top-level CLI entry. Shows help when run with no subcommand."""
     root = ctx.find_root()
     if root.obj is None:
         root.obj = {}
+    root.obj["timing"] = timing
+
     ensure_banner()
+
     if ctx.invoked_subcommand is None:
+        # Mirror the 'startup CLI' style: show commands/usage and exit 0
         typer.echo(ctx.get_help())
         raise typer.Exit(0)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _maybe_sanity(adp: Any) -> Optional[Callable[[Mapping[str, Any]], None]]:
+    """Return adapter.sanity as a typed callable if present, else None."""
+    attr = getattr(adp, "sanity", None)
+    if callable(attr):
+        return cast(Callable[[Mapping[str, Any]], None], attr)
+    return None
 
 
 def _name_for_row(raw: Mapping[str, Any]) -> str:
@@ -146,17 +230,22 @@ def _coerce_float(v: Any) -> float:
     return 0.0
 
 
-def _map_with_adapter(adp: Any, row: Mapping[str, Any]) -> Dict[str, float]:
-    fn: Optional[Callable[[Mapping[str, Any]], Mapping[str, Any]]] = (
-        getattr(adp, "map_raw", None) or getattr(adp, "map_raw_to_metrics", None)
+def _get_adapter_mapper(adp: AdapterProto) -> AdapterMappingFn:
+    # Prefer map_raw_to_metrics when present, else map_raw
+    if hasattr(adp, "map_raw_to_metrics") and callable(getattr(adp, "map_raw_to_metrics")):
+        return cast(AdapterMappingFn, getattr(adp, "map_raw_to_metrics"))
+    if hasattr(adp, "map_raw") and callable(getattr(adp, "map_raw")):
+        return cast(AdapterMappingFn, getattr(adp, "map_raw"))
+    raise typer.BadParameter(
+        f"Adapter '{getattr(adp, 'KEY', adp)}' lacks map_raw/map_raw_to_metrics."
     )
-    if not callable(fn):
-        raise typer.BadParameter(
-            f"Adapter '{getattr(adp, 'KEY', adp)}' lacks map_raw/map_raw_to_metrics."
-        )
-    out = fn(row)  # type: ignore[misc]
+
+
+def _map_with_adapter(adp: AdapterProto, row: Mapping[str, Any]) -> Dict[str, float]:
+    fn: AdapterMappingFn = _get_adapter_mapper(adp)
+    out: Mapping[str, Any] = fn(row)
     safe: Dict[str, float] = {}
-    for k, v in dict(out).items():
+    for k, v in out.items():
         safe[str(k)] = _coerce_float(v)
     return safe
 
@@ -164,12 +253,12 @@ def _map_with_adapter(adp: Any, row: Mapping[str, Any]) -> Dict[str, float]:
 def _yaml_load_text(text: str) -> Any:
     if yaml_mod is None:
         raise typer.BadParameter("PyYAML not installed; cannot read YAML.")
-    if _YAML_LOADER is not None:
-        return yaml_mod.load(text, Loader=_YAML_LOADER)
+    if _yaml_loader is not None:
+        return yaml_mod.load(text, Loader=_yaml_loader)
     return yaml_mod.safe_load(text)
 
 
-def _read_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
+def _read_rows(input_path: Path) -> Iterable[Row]:
     if str(input_path) == "-":
         reader = csv.DictReader(sys.stdin)
         for row in reader:
@@ -183,14 +272,29 @@ def _read_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
 
     suffix = input_path.suffix.lower()
     if suffix in {".yaml", ".yml"}:
-        data = _yaml_load_text(input_path.read_text(encoding="utf-8"))
-        src: Iterable[Mapping[str, Any]]
-        if isinstance(data, dict) and isinstance(data.get("rows"), list):
-            src = [r for r in data["rows"] if isinstance(r, dict)]
+        data_text = input_path.read_text(encoding="utf-8")
+        data: Any = _yaml_load_text(data_text)
+
+        # Always build a concretely-typed list for iteration
+        src: List[Mapping[str, Any]] = []
+
+        if isinstance(data, AbcMapping):
+            data_map = cast(Mapping[str, Any], data)
+            rows_val_obj: Any = data_map.get("rows")
+            if not isinstance(rows_val_obj, list):
+                raise typer.BadParameter("YAML must be a list[dict] or {rows: list[dict]}.")
+            rows_val: List[object] = cast(List[object], rows_val_obj)
+            for r_any in rows_val:
+                if isinstance(r_any, AbcMapping):
+                    src.append(cast(Mapping[str, Any], r_any))
         elif isinstance(data, list):
-            src = [r for r in data if isinstance(r, dict)]
+            data_list: List[object] = cast(List[object], data)
+            for r_any in data_list:
+                if isinstance(r_any, AbcMapping):
+                    src.append(cast(Mapping[str, Any], r_any))
         else:
             raise typer.BadParameter("YAML must be a list[dict] or {rows: list[dict]}.")
+
         for r in src:
             yield {str(k): v for k, v in r.items()}
         return
@@ -205,7 +309,12 @@ def _read_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
     raise typer.BadParameter("Input must be .yaml/.yml or .csv (JSON not supported).")
 
 
-def _write_csv(path: Path, rows: List[Dict[str, Any]], include_headers: bool = True) -> None:
+# Match the real csv._writer signature: positional-only and Iterable[Any]
+class _CsvWriter(Protocol):
+    def writerow(self, row: Iterable[Any], /) -> Any: ...
+
+
+def _write_csv(path: Path, rows: Rows, include_headers: bool = True) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
@@ -213,36 +322,45 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]], include_headers: bool = T
     fixed_front = [k for k in ("display_name", "group_name") if k in rows[0]]
     all_keys: set[str] = set()
     for r in rows:
-        all_keys.update(str(k) for k in r.keys())
+        for k in r.keys():
+            all_keys.add(str(k))
     for k in fixed_front:
         all_keys.discard(k)
     headers: List[str] = fixed_front + sorted(all_keys)
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(cast(IO[str], f))
+        writer = csv.writer(f)
+        w = cast(_CsvWriter, writer)
         if include_headers:
             w.writerow(headers)
-        matrix: List[List[str]] = []
         for r in rows:
-            matrix.append([str(r.get(k, "")) for k in headers])
-        w.writerows(matrix)
+            w.writerow([str(r.get(k, "")) for k in headers])
 
 
 def _load_bucket_weights(
-    adapter_obj: Any,
+    adapter_obj: AdapterProto,
     weights_path: Optional[Path],
     weights_preset: Optional[str],
 ) -> Optional[Dict[str, float]]:
     if weights_path and weights_preset:
         raise typer.BadParameter("Specify either --weights or --weights-preset, not both.")
 
+    # ── explicit typing for YAML branch ───────────────────────────────────────
     if weights_path:
-        data = _yaml_load_text(weights_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
+        data_any: Any = _yaml_load_text(weights_path.read_text(encoding="utf-8"))
+        if not isinstance(data_any, Mapping):
             raise typer.BadParameter("--weights YAML must be a mapping of {bucket: weight}.")
-        return {str(k): _coerce_float(v) for k, v in data.items()}
+        data_map: Mapping[str, Any] = cast(Mapping[str, Any], data_any)
 
-    presets = getattr(adapter_obj, "weights", None) or {}
+        out: Dict[str, float] = {}
+        for k_any, v_any in data_map.items():
+            out[str(k_any)] = _coerce_float(v_any)
+        return out
+
+    # ── explicit typing for adapter presets ───────────────────────────────────
+    presets: Mapping[str, Mapping[str, Any]] = cast(
+        Mapping[str, Mapping[str, Any]], getattr(adapter_obj, "weights", {}) or {}
+    )
     if not presets:
         return None
 
@@ -252,10 +370,15 @@ def _load_bucket_weights(
         raise typer.BadParameter(
             f"Unknown weights preset '{preset_name}'. Available: {avail or '(none)'}"
         )
-    return {str(k): _coerce_float(v) for k, v in presets[preset_name].items()}
+
+    weights_map: Mapping[str, Any] = presets[preset_name]
+    out2: Dict[str, float] = {}
+    for k_any, v_any in weights_map.items():
+        out2[str(k_any)] = _coerce_float(v_any)
+    return out2
 
 
-def _lazy_cache_export(guild_id: str) -> List[Dict[str, Any]]:
+def _lazy_cache_export(guild_id: str) -> Rows:
     try:
         mod = importlib.import_module("statline.core.cache")
         fn = getattr(mod, "get_mapped_rows_for_scoring", None)
@@ -263,17 +386,17 @@ def _lazy_cache_export(guild_id: str) -> List[Dict[str, Any]]:
             return []
 
         rows_obj: Any = fn(guild_id)
-        out: List[Dict[str, Any]] = []
+        out: Rows = []
 
         if isinstance(rows_obj, (list, tuple)):
-            for r in rows_obj:
-                if isinstance(r, Mapping):
-                    d = dict(cast(Mapping[str, Any], r))
+            for r_any in cast(Iterable[Any], rows_obj):
+                if isinstance(r_any, Mapping):
+                    d = cast(Mapping[str, Any], r_any)
                     out.append({str(k): v for k, v in d.items()})
             return out
 
         if isinstance(rows_obj, Mapping):
-            d = dict(cast(Mapping[str, Any], rows_obj))
+            d = cast(Mapping[str, Any], rows_obj)
             return [{str(k): v for k, v in d.items()}]
 
         return []
@@ -281,7 +404,7 @@ def _lazy_cache_export(guild_id: str) -> List[Dict[str, Any]]:
         return []
 
 
-def _lazy_cache_context(guild_id: str) -> Optional[Dict[str, Dict[str, float]]]:
+def _lazy_cache_context(guild_id: str) -> Optional[Context]:
     try:
         mod = importlib.import_module("statline.core.cache")
         fn = getattr(mod, "get_metric_context_ap", None)
@@ -292,11 +415,11 @@ def _lazy_cache_context(guild_id: str) -> Optional[Dict[str, Dict[str, float]]]:
         if not isinstance(ctx_obj, Mapping):
             return None
 
-        safe: Dict[str, Dict[str, float]] = {}
-        for k, d in dict(cast(Mapping[str, Any], ctx_obj)).items():
+        safe: Context = {}
+        for k, d in cast(Mapping[str, Any], ctx_obj).items():
             if isinstance(d, Mapping):
                 dd: Dict[str, float] = {}
-                for mk, mv in dict(cast(Mapping[str, Any], d)).items():
+                for mk, mv in cast(Mapping[str, Any], d).items():
                     try:
                         dd[str(mk)] = float(mv) if mv is not None else 0.0
                     except Exception:
@@ -312,14 +435,14 @@ def _lazy_force_refresh(guild_id: str) -> None:
         mod = importlib.import_module("statline.core.refresh")
         fn = getattr(mod, "sync_guild_if_stale", None)
         if callable(fn):
-            fn(guild_id, force=True)  # type: ignore[misc]
+            fn(guild_id, force=True)
     except Exception:
         return
 
 
 def _autobuild_stats_csv(
     output_path: Path, guild_id: str, refresh: bool
-) -> List[Dict[str, Any]]:
+) -> Rows:
     if refresh:
         _lazy_force_refresh(guild_id)
     rows = _lazy_cache_export(guild_id)
@@ -334,19 +457,18 @@ def _autobuild_stats_csv(
 # Typed shim around calculate_pri
 # ──────────────────────────────────────────────────────────────────────────────
 
-
 def _calc_pri_typed(
-    rows: List[Dict[str, Any]],
-    adp: Any,
+    rows: Rows,
+    adp: AdapterProto,
     *,
     team_wins: int,
     team_losses: int,
     weights_override: Optional[Dict[str, float]],
-    context: Optional[Dict[str, Dict[str, float]]],
-    _timing: Optional[StageTimes] = None,
+    context: Optional[Context],
+    _timing: Optional[_StageTimesProto] = None,
     caps_override: Optional[Dict[str, float]] = None,
-) -> List[Dict[str, Any]]:
-    res = calculate_pri(
+) -> Rows:
+    return calculate_pri(
         rows,
         adapter=adp,
         team_wins=team_wins,
@@ -354,24 +476,27 @@ def _calc_pri_typed(
         weights_override=weights_override,
         context=context,
         caps_override=caps_override,
-        _timing=_timing,
+        _timing=cast(Any, _timing),  # runtime accepts StageTimes; proto satisfies type-checker
     )
-    return cast(List[Dict[str, Any]], res)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Commands
 # ──────────────────────────────────────────────────────────────────────────────
 
-
 @app.command("interactive")
 def interactive(
-    timing: bool = typer.Option(
-        False, "--timing/--no-timing", help="Show per-row timing inside interactive mode"
+    ctx: typer.Context,
+    timing: Optional[bool] = typer.Option(
+        None,
+        "--timing/--no-timing",
+        help="Show per-row timing inside interactive mode (inherits root default).",
     ),
 ) -> None:
+    """Run the interactive calculator UI."""
     ensure_banner()
+    show_timing = _resolve_timing(ctx, timing) or STATLINE_DEBUG_TIMING
     try:
-        interactive_mode(show_banner=False, show_timing=(timing or STATLINE_DEBUG_TIMING))
+        interactive_mode(show_banner=False, show_timing=show_timing)
     except (KeyboardInterrupt, EOFError):
         print("\nExiting StatLine.")
         raise typer.Exit(code=0)
@@ -381,7 +506,8 @@ def interactive(
 def adapters_list() -> None:
     """List available adapter keys."""
     ensure_banner()
-    for name in sorted(list_names()):
+    names_iter: Iterable[str] = cast(Iterable[str], list_names())
+    for name in sorted(names_iter):
         typer.echo(name)
 
 
@@ -397,11 +523,12 @@ def export_csv(
     ensure_banner()
     _ = load_adapter(adapter)  # validate adapter exists
     rows = _autobuild_stats_csv(out, guild_id=guild_id, refresh=refresh)
-    typer.secho(f"Wrote {out} ({len(rows)} rows).", fg=typer.colors.GREEN)
+    typer.secho(f"Wrote {out} ({len(rows)} rows).", fg=getattr(typer.colors, "GREEN", None))
 
 
 @app.command("score")
 def score(
+    ctx: typer.Context,
     adapter: str = typer.Option(..., "--adapter", help="Adapter key (e.g., rbw5, legacy, valorant)"),
     input_path: Path = typer.Argument(
         Path("stats.csv"),
@@ -419,7 +546,9 @@ def score(
     include_headers: bool = typer.Option(True, "--headers/--no-headers", help="Include header row in CSV output"),
     team_wins: int = typer.Option(0, "--team-wins", help="Team wins for small PRI multiplier"),
     team_losses: int = typer.Option(0, "--team-losses", help="Team losses for small PRI multiplier"),
-    timing: bool = typer.Option(False, "--timing/--no-timing", help="Print per-stage timing summary"),
+    timing: Optional[bool] = typer.Option(
+        None, "--timing/--no-timing", help="Print per-stage timing summary (inherits root default)."
+    ),
     caps_csv: Optional[Path] = typer.Option(
         None, "--caps-csv", help="CSV with per-metric caps (key[,lower,upper,cap])"
     ),
@@ -428,13 +557,15 @@ def score(
     Batch score via an adapter (YAML/CSV input; CSV/STDOUT output).
     """
     ensure_banner()
-    T = StageTimes()
+    show_timing = _resolve_timing(ctx, timing) or STATLINE_DEBUG_TIMING
+
+    T: _StageTimesProto = cast(_StageTimesProto, StageTimes())
 
     with T.stage("adapter"):
-        adp = load_adapter(adapter)
+        adp = cast(AdapterProto, load_adapter(adapter))
         bucket_weights = _load_bucket_weights(adp, weights, weights_preset)
 
-    mapped_rows: Optional[List[Dict[str, Any]]] = None
+    mapped_rows: Optional[Rows] = None
 
     if not input_path.exists() and str(input_path) != "-":
         if guild_id is None:
@@ -444,30 +575,33 @@ def score(
             )
         with T.stage("autobuild"):
             mapped_rows = _autobuild_stats_csv(input_path, guild_id=guild_id, refresh=refresh)
-            typer.secho(f"Auto-generated {input_path} from guild '{guild_id}'.", fg=typer.colors.GREEN)
+            typer.secho(
+                f"Auto-generated {input_path} from guild '{guild_id}'.",
+                fg=getattr(typer.colors, "GREEN", None),
+            )
 
     if mapped_rows is None:
         with T.stage("read"):
-            raw_rows = list(_read_rows(input_path))
+            raw_rows: Rows = list(_read_rows(input_path))
+
         with T.stage("map"):
             mapped_rows = []
             append_row = mapped_rows.append
-            get_sanity = getattr(adp, "sanity", None)
-            callable_sanity = get_sanity if callable(get_sanity) else None
+            sanity = _maybe_sanity(adp)
             for r in raw_rows:
                 m = _map_with_adapter(adp, r)
-                if callable_sanity:
-                    callable_sanity(m)
+                if sanity:
+                    sanity(m)
                 append_row(m)
 
     with T.stage("context"):
         context = _lazy_cache_context(guild_id) if guild_id else None
 
     assert mapped_rows is not None
-    mapped_rows_list: List[Dict[str, Any]] = mapped_rows
+    mapped_rows_list: Rows = mapped_rows
 
     with T.stage("score"):
-        results_list: List[Dict[str, Any]] = _calc_pri_typed(
+        results_list: Rows = _calc_pri_typed(
             mapped_rows_list,
             adp,
             team_wins=team_wins,
@@ -479,32 +613,36 @@ def score(
 
     with T.stage("write"):
         out_fields: List[str] = ["name", "pri", "pri_raw", "context_used"]
-        rows_out: List[Dict[str, Any]] = []
+        rows_out: Rows = []
         for i in range(len(mapped_rows_list)):
             raw = mapped_rows_list[i]
             res = results_list[i]
-            rows_out.append({
-                "name": _name_for_row(raw) or raw.get("display_name") or "(unnamed)",
-                "pri": int(res.get("pri", 0)),
-                "pri_raw": f"{float(res.get('pri_raw', 0.0)):.4f}",
-                "context_used": res.get("context_used", ""),
-            })
+            rows_out.append(
+                {
+                    "name": _name_for_row(raw) or raw.get("display_name") or "(unnamed)",
+                    "pri": int(res.get("pri", 0)),
+                    "pri_raw": f"{float(res.get('pri_raw', 0.0)):.4f}",
+                    "context_used": res.get("context_used", ""),
+                }
+            )
 
         if out:
             with out.open("w", newline="", encoding="utf-8") as f:
-                w = csv.writer(cast(IO[str], f))
+                writer = csv.writer(f)
+                w = cast(_CsvWriter, writer)
                 if include_headers:
                     w.writerow(out_fields)
-                matrix: List[List[str]] = [[str(row.get(k, "")) for k in out_fields] for row in rows_out]
-                w.writerows(matrix)
+                for row in rows_out:
+                    w.writerow([str(row.get(k, "")) for k in out_fields])
         else:
-            w = csv.writer(cast(IO[str], sys.stdout))
+            writer = csv.writer(sys.stdout)
+            w = cast(_CsvWriter, writer)
             if include_headers:
                 w.writerow(out_fields)
-            matrix: List[List[str]] = [[str(row.get(k, "")) for k in out_fields] for row in rows_out]
-            w.writerows(matrix)
+            for row in rows_out:
+                w.writerow([str(row.get(k, "")) for k in out_fields])
 
-    if timing or STATLINE_DEBUG_TIMING:
+    if show_timing:
         total = sum(ms for _, ms in T.items)
         parts = ", ".join(f"{n} {ms:.2f}" for n, ms in T.items)
         print(file=sys.stderr)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
-from typing import Any, Mapping, TypedDict, cast
+from typing import Any, Mapping, Optional, TypedDict
 
+# -----------------------------------------------------------------------------
+# Max-stats schema & defaults (source of truth if no remote sheet is provided)
+# -----------------------------------------------------------------------------
 
 class MaxStats(TypedDict):
     ppg: float
@@ -17,44 +17,67 @@ class MaxStats(TypedDict):
     fgm: float
     fga: float
 
+
 DEFAULT_MAX_STATS: MaxStats = {
-    "ppg": 41.0, "apg": 18.0, "orpg": 7.0, "drpg": 8.0,
-    "spg": 5.0,  "bpg": 5.0,  "tov": 8.0,  "fgm": 16.0, "fga": 28.0,
+    "ppg": 41.0,
+    "apg": 18.0,
+    "orpg": 7.0,
+    "drpg": 8.0,
+    "spg": 5.0,
+    "bpg": 5.0,
+    "tov": 8.0,
+    "fgm": 16.0,
+    "fga": 28.0,
 }
 
-MAX_STATS_FILE: Path = Path(
-    os.getenv("STATLINE_MAX_STATS_FILE", Path.cwd() / "max_stats.json")
-)
+# -----------------------------------------------------------------------------
+# Remote resolver (optional Google Sheets). No filesystem access.
+# -----------------------------------------------------------------------------
 
-def _ensure_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+# Import lazily/optionally so strict type checkers are happy even without extras.
+try:
+    from statline.io.sheets import load_max_stats_from_sheets  # optional extra
+except Exception:
+    load_max_stats_from_sheets = None  # type: ignore[assignment]
 
-def _normalize(d: Mapping[str, Any]) -> MaxStats:
-    # Merge defaults and coerce to float; ignore extra keys
-    base = cast(MaxStats, DEFAULT_MAX_STATS.copy())
-    for k in DEFAULT_MAX_STATS.keys():
-        if k in d:
+
+def _merge_defaults(overrides: Mapping[str, Any]) -> MaxStats:
+    """Overlay known keys from `overrides` onto defaults, coercing to float."""
+    out: MaxStats = DEFAULT_MAX_STATS.copy()
+    for k in out.keys():
+        if k in overrides:
             try:
-                base[k] = float(d[k])  # type: ignore[arg-type]
+                out[k] = float(overrides[k])  # type: ignore[call-arg]
             except (TypeError, ValueError):
+                # keep default if not coercible
                 pass
-    return base
+    return out
 
-def load_max_stats(path: Path = MAX_STATS_FILE) -> MaxStats:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
+
+def resolve_max_stats(
+    *,
+    spreadsheet_id: Optional[str] = None,
+    worksheet_name: str = "MAX_STATS",
+    credentials_file: Optional[str] = None,
+) -> MaxStats:
+    """
+    Return max stats.
+
+    - If `spreadsheet_id` is provided and Sheets extras are available, load from the
+      given worksheet and merge onto defaults.
+    - Otherwise, return a copy of DEFAULT_MAX_STATS.
+
+    This function never touches local disk.
+    """
+    if spreadsheet_id and load_max_stats_from_sheets is not None:
+        try:
+            data = load_max_stats_from_sheets(
+                spreadsheet_id=spreadsheet_id,
+                worksheet_name=worksheet_name,
+                credentials_file=credentials_file,
+            )
+            return _merge_defaults(data)
+        except Exception:
+            # Fail closed to safe defaults if remote read fails.
             return DEFAULT_MAX_STATS.copy()
-        return _normalize(data)
-    except FileNotFoundError:
-        return DEFAULT_MAX_STATS.copy()
-    except (json.JSONDecodeError, OSError):
-        return DEFAULT_MAX_STATS.copy()
-
-def save_max_stats(stats: MaxStats, path: Path = MAX_STATS_FILE) -> None:
-    _ensure_parent(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=4)
-    os.replace(tmp, path)
+    return DEFAULT_MAX_STATS.copy()

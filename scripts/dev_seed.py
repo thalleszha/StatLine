@@ -31,12 +31,12 @@ def _iter_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
             raise typer.BadParameter("PyYAML not installed; cannot read YAML.")
         data = yaml.safe_load(input_path.read_text(encoding="utf-8"))
         if isinstance(data, dict) and "rows" in data and isinstance(data["rows"], list):
-            for r in data["rows"]:
+            for r in data["rows"]:  
                 if isinstance(r, dict):
                     yield r
             return
         if isinstance(data, list):
-            for r in data:
+            for r in data:  
                 if isinstance(r, dict):
                     yield r
             return

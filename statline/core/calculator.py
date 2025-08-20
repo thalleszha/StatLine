@@ -1,67 +1,86 @@
 # statline/core/calculator.py
 from __future__ import annotations
 
+# ── stdlib ────────────────────────────────────────────────────────────────────
 import os
 import sys
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
+from contextlib import nullcontext
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, cast
 
+# ── third-party ───────────────────────────────────────────────────────────────
 import typer
 
+# ── first-party ───────────────────────────────────────────────────────────────
 from statline.utils.timing import StageTimes
 
 from .adapters import list_names
 from .adapters import load as load_adapter
 from .scoring import calculate_pri
 
+# ── typing helpers ────────────────────────────────────────────────────────────
+Row = Dict[str, Any]
+Rows = List[Row]
+_console: Optional[Any]
+_rich_ok: bool
 try:
-    from rich.console import Console
-    from rich.table import Table
-    _RICH_OK = True
+    from rich.console import Console  # type: ignore[import-not-found]
     _console = Console()
+    _rich_ok = True
 except Exception:
-    _RICH_OK = False
-    _console = None  # type: ignore[assignment]
-    Table = None     # type: ignore[assignment]
+    _console = None
+    _rich_ok = False
+
+class AdapterProto(Protocol):
+    """Minimal surface used by the calculator."""
+    KEY: str
+
+    # Some adapters expose `metrics` (iterable of objects with a `key` attr)
+    metrics: Sequence[Any] | Any
+
+    # Adapters may provide either of these mapping functions.
+    def map_raw_to_metrics(self, raw: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def map_raw(self, raw: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    # Optional helper some adapters provide:
+    def sanity(self, metrics: Mapping[str, Any]) -> None: ...  # pragma: no cover
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Input helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _prompt_float_strict(name: str) -> float:
-    while True:
-        s = input(f"{name}: ").strip()
-        if not s:
-            return 0.0
-        try:
-            return float(s.replace(",", "."))
-        except ValueError:
-            print("  Enter a number (e.g., 0.7) or leave blank for 0.")
-
 def _sanitize_numeric_metrics(raw_metrics: Mapping[str, Any]) -> Dict[str, Any]:
+    """Coerce string numbers (including '1,23') to float; blank → 0.0."""
     numeric_metrics: Dict[str, Any] = {}
     for k, v in raw_metrics.items():
         if isinstance(v, str):
-            vv = v.strip()
-            if vv == "":
+            s = v.strip()
+            if s == "":
                 numeric_metrics[k] = 0.0
                 continue
             try:
-                numeric_metrics[k] = float(vv.replace(",", "."))
+                numeric_metrics[k] = float(s.replace(",", "."))
                 continue
             except ValueError:
                 pass
         numeric_metrics[k] = v
     return numeric_metrics
 
-def _get_mapper(adapter: Any) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    fn: Any = getattr(adapter, "map_raw", None)
-    if not callable(fn):
-        fn = getattr(adapter, "map_raw_to_metrics", None)
-    if not callable(fn):
-        raise RuntimeError("Adapter has neither map_raw nor map_raw_to_metrics.")
-    return cast(Callable[[Mapping[str, Any]], Mapping[str, Any]], fn)
 
-def safe_map_raw(adapter: Any, raw_metrics: Dict[str, Any]) -> Dict[str, Any]:
+def _get_mapper(adapter: AdapterProto) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """Return adapter's mapping function (prefers map_raw_to_metrics)."""
+    fn: Optional[Callable[[Mapping[str, Any]], Mapping[str, Any]]] = None
+    if hasattr(adapter, "map_raw_to_metrics") and callable(getattr(adapter, "map_raw_to_metrics")):
+        fn = cast(Callable[[Mapping[str, Any]], Mapping[str, Any]], getattr(adapter, "map_raw_to_metrics"))
+    elif hasattr(adapter, "map_raw") and callable(getattr(adapter, "map_raw")):
+        fn = cast(Callable[[Mapping[str, Any]], Mapping[str, Any]], getattr(adapter, "map_raw"))
+    if fn is None:
+        raise RuntimeError("Adapter has neither map_raw nor map_raw_to_metrics.")
+    return fn
+
+
+def safe_map_raw(adapter: AdapterProto, raw_metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a row through the adapter, with numeric sanitization and good errors."""
     mapper = _get_mapper(adapter)
     numeric_metrics = _sanitize_numeric_metrics(raw_metrics)
     try:
@@ -77,6 +96,7 @@ def safe_map_raw(adapter: Any, raw_metrics: Dict[str, Any]) -> Dict[str, Any]:
         print("============================\n")
         raise
 
+
 def _print_timing(T: StageTimes) -> None:
     if not T.items:
         return
@@ -84,8 +104,12 @@ def _print_timing(T: StageTimes) -> None:
     parts = ", ".join(f"{name} {ms:.2f}" for name, ms in T.items)
     print(f"\n⏱ {total:.2f} ms total ({parts})", file=sys.stderr)
 
-    if _RICH_OK and _console and sys.stderr.isatty():
-        from rich.table import Table  # local import keeps Pylance happy
+    # Pretty table if Rich is available and we're on a TTY.
+    if _rich_ok and _console and sys.stderr.isatty():
+        try:
+            from rich.table import Table  # type: ignore[import-not-found]
+        except Exception:
+            return
         tbl = Table(title="Timing (ms)", show_lines=False)
         tbl.add_column("Stage", style="bold")
         tbl.add_column("ms", justify="right")
@@ -95,6 +119,7 @@ def _print_timing(T: StageTimes) -> None:
         tbl.add_row("TOTAL", f"{total:.2f}")
         _console.print(tbl)
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Interactive
 # ──────────────────────────────────────────────────────────────────────────────
@@ -103,7 +128,6 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
     """
     Adapter-driven interactive scoring with prompts and formatted output.
     """
-    from contextlib import nullcontext
 
     def banner() -> None:
         typer.secho("=== StatLine — Adapter-Driven Scoring ===", fg=typer.colors.CYAN, bold=True)
@@ -117,8 +141,10 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
                     raise ValueError
                 return val
             except Exception:
-                typer.secho(f"  Enter an integer >= {min_value if min_value is not None else '-∞'}.",
-                            fg=typer.colors.RED)
+                typer.secho(
+                    f"  Enter an integer >= {min_value if min_value is not None else '-∞'}.",
+                    fg=typer.colors.RED,
+                )
 
     def prompt_float(label: str, default: float = 0.0) -> float:
         while True:
@@ -145,65 +171,60 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
                     return options[idx]
             if raw in options:
                 return raw
-            typer.secho("  Invalid selection. Choose a number from the list or an exact option.",
-                        fg=typer.colors.RED)
+            typer.secho(
+                "  Invalid selection. Choose a number from the list or an exact option.",
+                fg=typer.colors.RED,
+            )
 
-    def get_mapper(adp: Any) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-        fn = getattr(adp, "map_raw", None) or getattr(adp, "map_raw_to_metrics", None)
-        if not callable(fn):
-            raise RuntimeError("Adapter lacks map_raw/map_raw_to_metrics.")
-        return fn  # type: ignore[return-value]
+    def get_mapper(adp: AdapterProto) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+        return _get_mapper(adp)
 
     def sanitize_numeric(raw: Mapping[str, Any]) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        for k, v in raw.items():
-            if isinstance(v, str):
-                s = v.strip().replace(",", ".")
-                if s == "":
-                    out[k] = 0.0
-                    continue
-                try:
-                    out[k] = float(s)
-                    continue
-                except ValueError:
-                    pass
-            out[k] = v
-        return out
+        return _sanitize_numeric_metrics(raw)
 
-    def choose_adapter(default_key: Optional[str]) -> Tuple[str, Any]:
+    def choose_adapter(default_key: Optional[str]) -> Tuple[str, AdapterProto]:
         names = list_names()
         if not names:
             typer.secho("No adapters found.", fg=typer.colors.RED)
             raise typer.Exit(1)
-        default_idx = max(0, names.index(default_key)) if default_key in names else 0
+        default_idx = max(0, names.index(default_key)) if (default_key and default_key in names) else 0
         choice = menu_select("Available adapters:", names, default_idx)
         try:
-            adp = load_adapter(choice)
+            adp = cast(AdapterProto, load_adapter(choice))
         except Exception as e:
             typer.secho(f"Failed to load adapter '{choice}': {e}", fg=typer.colors.RED)
             return choose_adapter(default_key)
         return choice, adp
 
-    def choose_weights(adp: Any) -> Optional[Dict[str, float]]:
-        presets = getattr(adp, "weights", {}) or {}
-        if not isinstance(presets, dict) or not presets:
+    def choose_weights(adp: AdapterProto) -> Optional[Dict[str, float]]:
+        # Adapter-provided presets are a mapping: preset_name -> mapping of bucket -> weight
+        raw_presets = getattr(adp, "weights", {}) or {}
+        presets: Dict[str, Mapping[str, Any]] = cast(Dict[str, Mapping[str, Any]], raw_presets)
+        if not presets:
             return None
-        names = list(presets.keys())
+
+        names: List[str] = list(presets.keys())  # keys are now str, not Unknown
         default_idx = names.index("pri") if "pri" in names else 0
         chosen = menu_select("Weight presets:", names, default_idx)
+
         try:
-            w = {str(k): float(v) for k, v in presets[chosen].items()}
+            selected: Mapping[str, Any] = presets[chosen]   # concrete Mapping[str, Any]
+            # Iterate with precise types so k and v aren’t Unknown
+            w: Dict[str, float] = {str(k): float(v) for k, v in selected.items()}
         except Exception:
             typer.secho("  Bad preset weights; ignoring override.", fg=typer.colors.RED)
             return None
+
         total = sum(w.values())
         if not (0.999 <= total <= 1.001):
-            typer.secho(f"  Preset weights must sum to 1.0 (got {total:.6f}); ignoring override.",
-                        fg=typer.colors.YELLOW)
+            typer.secho(
+                f"  Preset weights must sum to 1.0 (got {total:.6f}); ignoring override.",
+                fg=typer.colors.YELLOW,
+            )
             return None
         return w
 
-    def render_result(name: str, adapter_key: str, res: Dict[str, Any]) -> None:
+    def render_result(name: str, adapter_key: str, res: Mapping[str, Any]) -> None:
         pri = int(res.get("pri", 0))
         pri_raw = float(res.get("pri_raw", 0.0))
         ctx_used = res.get("context_used", "")
@@ -211,46 +232,56 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
         typer.secho("\n" + header, bold=True)
         typer.echo(f"PRI: {pri} / 99  (raw: {pri_raw:.4f}, context: {ctx_used})")
 
-        buckets = res.get("buckets", {}) or {}
-        comps = res.get("components", {}) or {}
+        buckets = cast(Mapping[str, Any], res.get("buckets", {}) or {})
+        comps = cast(Mapping[str, Any], res.get("components", {}) or {})
 
-        if _RICH_OK and _console and Table is not None:
-            t = None
-            if buckets:
-                t = Table(title="Buckets", show_lines=False)
-                t.add_column("Bucket", style="bold")
-                t.add_column("Value")
-                for b, v in buckets.items():
-                    try:
-                        t.add_row(str(b), f"{float(v):.3f}")
-                    except Exception:
-                        t.add_row(str(b), str(v))
-                _console.print(t)
-            if comps:
-                t = Table(title="Top components", show_lines=False)
-                t.add_column("Component", style="bold")
-                t.add_column("Value")
-                for k, v in sorted(comps.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-                    try:
-                        t.add_row(str(k), f"{float(v):.3f}")
-                    except Exception:
-                        t.add_row(str(k), str(v))
-                _console.print(t)
-        else:
-            if buckets:
-                typer.secho("\nBuckets:", bold=True)
-                for b, v in buckets.items():
-                    try:
-                        typer.echo(f"  {b:<14} {float(v):.3f}")
-                    except Exception:
-                        typer.echo(f"  {b:<14} {v}")
-            if comps:
-                typer.secho("\nTop components:", bold=True)
-                for k, v in sorted(comps.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-                    try:
-                        typer.echo(f"  {k:<14} {float(v):.3f}")
-                    except Exception:
-                        typer.echo(f"  {k:<14} {v}")
+        if _rich_ok and _console:
+            # Import class into a local variable instead of reassigning the symbol "Table"
+            table_cls: Optional[Any] = None
+            try:
+                from rich.table import Table as _RichTable  # type: ignore[import-not-found]
+                table_cls = _RichTable
+            except Exception:
+                table_cls = None
+
+            if table_cls is not None:
+                if buckets:
+                    t = table_cls(title="Buckets", show_lines=False)
+                    t.add_column("Bucket", style="bold")
+                    t.add_column("Value")
+                    for b, v in buckets.items():
+                        try:
+                            t.add_row(str(b), f"{float(v):.3f}")
+                        except Exception:
+                            t.add_row(str(b), str(v))
+                    _console.print(t)
+                if comps:
+                    t = table_cls(title="Top components", show_lines=False)
+                    t.add_column("Component", style="bold")
+                    t.add_column("Value")
+                    for k, v in sorted(comps.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                        try:
+                            t.add_row(str(k), f"{float(v):.3f}")
+                        except Exception:
+                            t.add_row(str(k), str(v))
+                    _console.print(t)
+                return
+
+        # Plain-text fallback
+        if buckets:
+            typer.secho("\nBuckets:", bold=True)
+            for b, v in buckets.items():
+                try:
+                    typer.echo(f"  {b:<14} {float(v):.3f}")
+                except Exception:
+                    typer.echo(f"  {b:<14} {v}")
+        if comps:
+            typer.secho("\nTop components:", bold=True)
+            for k, v in sorted(comps.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                try:
+                    typer.echo(f"  {k:<14} {float(v):.3f}")
+                except Exception:
+                    typer.echo(f"  {k:<14} {v}")
 
     # ── flow ──────────────────────────────────────────────────────────────────
     if show_banner:
@@ -266,8 +297,14 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
         weights_override = choose_weights(adp)
 
         while True:
-            typer.secho("\n--- Enter Raw Row Fields (press Enter for 0) ---", fg=typer.colors.BLUE, bold=True)
-            metric_keys: List[str] = [getattr(m, "key", str(m)) for m in getattr(adp, "metrics", [])]
+            typer.secho(
+                "\n--- Enter Raw Row Fields (press Enter for 0) ---",
+                fg=typer.colors.BLUE,
+                bold=True,
+            )
+            # metrics may be a list of objects with `key`, or raw strings; normalize to strings
+            metrics_any = getattr(adp, "metrics", []) or []
+            metric_keys: List[str] = [getattr(m, "key", str(m)) for m in metrics_any]
             if metric_keys:
                 typer.echo("Metrics: " + ", ".join(metric_keys))
 
@@ -307,7 +344,7 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
                 typer.secho(f"Error: {e}", fg=typer.colors.RED)
                 continue
             finally:
-                if T:
+                if T is not None:
                     _print_timing(T)
 
             choice = menu_select("Next step:", ["Next row", "Change adapter", "Exit"], default_index=0)
@@ -316,6 +353,7 @@ def interactive_mode(*, show_banner: bool = True, show_timing: Optional[bool] = 
             if choice == "Exit":
                 typer.echo("\nExiting StatLine.")
                 return
+
 
 if __name__ == "__main__":
     try:
