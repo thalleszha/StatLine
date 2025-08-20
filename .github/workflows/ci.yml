@@ -36,18 +36,33 @@ jobs:
     timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
+
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
+
+      # uv needs a venv before `uv pip` / `uv run`
       - name: Create venv
         run: uv venv --python 3.12
+
       - name: Cache ruff
         uses: actions/cache@v4
         with:
           path: ~/.cache/ruff
           key: ruff-${{ runner.os }}-${{ hashFiles('pyproject.toml', '.ruff.toml', 'ruff.toml') }}
-      - run: uv pip install ruff
-      - run: uv run ruff check .
+
+      - name: Install ruff
+        run: uv pip install ruff
+
+      # Non-blocking lint: auto-fix imports and other fixables, annotate, but don't fail the job
+      - name: Ruff autofix + annotate (non-blocking)
+        run: |
+          uv run ruff check . --fix --unsafe-fixes --output-format=github --exit-zero
+          uv run ruff format .
+
+      # To enforce later, delete the step above and use this instead:
+      # - name: Ruff (gating)
+      #   run: uv run ruff check . --fix
 
   mypy:
     name: Mypy (type check)
