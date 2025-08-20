@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Dict, List
 
+from .compile import CompiledAdapter, compile_adapter  # must exist in compile.py
 from .loader import load_spec
-from .compile import compile_adapter, CompiledAdapter  # must exist in compile.py
 
 _CACHE: Dict[str, CompiledAdapter] = {}
 

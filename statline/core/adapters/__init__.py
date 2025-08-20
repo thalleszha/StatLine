@@ -4,53 +4,53 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from types import ModuleType
-from typing import Protocol, Mapping, Any, Dict, Iterable, cast, runtime_checkable
+from typing import Any, Callable, Iterable, Mapping, Protocol, cast
 
-# statline/adapters/__init__.py
-# from . import rbw5   # when you add it
-from .registry import list_names, load
-
+# Re-export the public API expected by callers (e.g., `from statline.core.adapters import list_names, load`)
+# If your canonical implementations live in .registry, keep this import.
+# Otherwise, you can implement `list_names`/`load` here and drop the import.
+from .registry import list_names, load  # noqa: F401  (re-exported via __all__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Adapter contract (module-level Protocol)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@runtime_checkable
 class Adapter(Protocol):
     """
-    Game adapter contract (implemented by a module).
+    Describes the surface of an adapter *module*.
 
-    Required attrs on the module:
+    Required module attributes:
       KEY: str
       ALIASES: tuple[str, ...]
       METRICS: tuple[str, ...]
-    Required callables:
-      map_raw_to_metrics(raw: Mapping[str, Any]) -> dict[str, float]
-      to_player_stats(raw: Mapping[str, Any]) -> Any
-    Optional:
-      sniff(headers: Iterable[str]) -> bool   # for auto-detect flows
+      map_raw_to_metrics: Callable[[Mapping[str, Any]], dict[str, float]]
+      to_player_stats: Callable[[Mapping[str, Any]], Any]
+
+    Optional (not enforced by the Protocol):
+      sniff: Callable[[Iterable[str]], bool]
     """
+
     KEY: str
     ALIASES: tuple[str, ...]
     METRICS: tuple[str, ...]
-
-    def map_raw_to_metrics(self, raw: Mapping[str, Any]) -> dict[str, float]: ...
-    def to_player_stats(self, raw: Mapping[str, Any]) -> Any: ...
-    def sniff(self, headers: Iterable[str]) -> bool: ...  # type: ignore[empty-body]
-
+    map_raw_to_metrics: Callable[[Mapping[str, Any]], dict[str, float]]
+    to_player_stats: Callable[[Mapping[str, Any]], Any]
+    # NOTE: `sniff` is intentionally omitted from the Protocol so its absence
+    #       doesn't violate typing. We still allow it at runtime.
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Discovery & registry
+# Discovery & registry (runtime helper utilities)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _PACKAGE = __name__  # "statline.core.adapters"
-_DISCOVERED: Dict[str, str] = {}   # key/alias -> module path
+_DISCOVERED: dict[str, str] = {}   # key/alias -> module path
 _FROZEN = False
 
 
 def _iter_adapter_modules() -> Iterable[str]:
     """Yield submodule paths under this package (one level)."""
     pkg = importlib.import_module(_PACKAGE)
+    # mypy: __path__ exists on packages at runtime; ignore for static analysis
     for _finder, name, ispkg in pkgutil.iter_modules(pkg.__path__):  # type: ignore[attr-defined]
         if not ispkg:
             yield f"{_PACKAGE}.{name}"
@@ -84,15 +84,16 @@ def _ensure_discovered() -> None:
     _FROZEN = True
 
 
-def supported_adapters() -> Dict[str, str]:
+def supported_adapters() -> dict[str, str]:
     """Return key/alias -> module path."""
     _ensure_discovered()
     return dict(_DISCOVERED)
 
 
 def _validate_adapter_module(mod: ModuleType) -> Adapter:
-    """Runtime-validate module surface, then cast so Pylance is happy."""
-    for attr in ("KEY", "METRICS", "map_raw_to_metrics", "to_player_stats"):
+    """Runtime-validate module surface, then cast so type checkers are satisfied."""
+    required_attrs = ("KEY", "ALIASES", "METRICS", "map_raw_to_metrics", "to_player_stats")
+    for attr in required_attrs:
         if not hasattr(mod, attr):
             raise RuntimeError(f"Module {mod.__name__} missing adapter attribute: {attr}")
     if not callable(getattr(mod, "map_raw_to_metrics")) or not callable(getattr(mod, "to_player_stats")):
@@ -114,4 +115,12 @@ def load_adapter(game_title: str) -> Adapter:
     return _validate_adapter_module(mod)
 
 
-__all__ = ["Adapter", "supported_adapters", "load_adapter"]
+__all__ = [
+    # Public runtime helpers
+    "Adapter",
+    "supported_adapters",
+    "load_adapter",
+    # Explicit re-exports expected by import sites and mypy
+    "list_names",
+    "load",
+]

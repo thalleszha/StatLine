@@ -104,7 +104,7 @@ jobs:
         with:
           path: |
             ~/.cache/uv
-            ${{ env.LOCALAPPDATA }}\uv\cache
+            ${{ runner.os == 'Windows' && format('{0}\\uv\\cache', runner.temp) || '' }}
           key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
       - name: Install
         run: uv pip install -e ".[dev,sheets]" pytest pytest-cov

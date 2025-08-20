@@ -1,7 +1,7 @@
 # statline/core/weights.py
 from __future__ import annotations
 
-from typing import Mapping, Iterable, Optional, Dict, SupportsFloat
+from typing import Dict, Iterable, Mapping, Optional, SupportsFloat
 
 
 def normalize_weights(weights: Mapping[str, SupportsFloat]) -> dict[str, float]:

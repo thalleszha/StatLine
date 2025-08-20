@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Mapping
+from typing import Dict, List, Mapping, Optional, Tuple
 
 # NOTE:
 # - mapping is now OPTIONAL (default empty dict)

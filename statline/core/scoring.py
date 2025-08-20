@@ -1,19 +1,19 @@
 # statline/core/scoring.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Mapping, Any, Optional, List
 from contextlib import nullcontext
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional
 
+from ..utils.config import (
+    M_OFFSET,
+    M_SCALE,
+    TEAM_FACTOR_MAX,
+    TEAM_FACTOR_MIN,
+    TEAM_WEIGHT,
+)
 from .normalization import clamp01
 from .weights import normalize_weights
-from ..utils.config import (
-    TEAM_WEIGHT,
-    TEAM_FACTOR_MIN,
-    TEAM_FACTOR_MAX,
-    M_SCALE,
-    M_OFFSET,
-)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Small utilities

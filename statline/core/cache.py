@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Iterable, Dict, Any, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
+from .db import get_conn
 from .guild_manager import (
     get_guild_config,
-    update_guild_config,
-    now_ts,
     iterate_guilds,
+    now_ts,
+    update_guild_config,
 )
-from .db import get_conn
 from .sheets_sync import sync_guild_sheets  # does real fetch+upsert into entities/metrics
 
 # Default TTL: 24 hours

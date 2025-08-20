@@ -1,12 +1,13 @@
 # statline/core/adapters/compile.py
 from __future__ import annotations
+
+import math
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, cast
-import re
-import math
 
-from .types import AdapterSpec, MetricSpec, EffSpec
 from .hooks import get as get_hooks
+from .types import AdapterSpec, EffSpec, MetricSpec
 
 # ───────────────── Legacy mapping evaluator (safe, limited) ──────────────────
 
@@ -113,13 +114,19 @@ def _apply_transform(x: float, spec: Optional[Mapping[str, Any]]) -> float:
     if name == "linear":
         return x * _num(p.get("scale", 1.0)) + _num(p.get("offset", 0.0))
     if name == "capped_linear":
-        cap = _num(p["cap"]);  return x if x <= cap else cap
+        cap = _num(p["cap"])
+        return x if x <= cap else cap
     if name == "minmax":
-        lo, hi = _num(p["lo"]), _num(p["hi"]);  return min(max(x, lo), hi)
+        lo = _num(p["lo"])
+        hi = _num(p["hi"])
+        return min(max(x, lo), hi)
     if name == "pct01":
-        by = _num(p.get("by", 100.0)) or 100.0;  return x / by
+        by = _num(p.get("by", 100.0)) or 100.0
+        return x / by
     if name == "softcap":
-        cap, slope = _num(p["cap"]), _num(p["slope"]);  return x if x <= cap else cap + (x - cap) * slope
+        cap = _num(p["cap"])
+        slope = _num(p["slope"])
+        return x if x <= cap else cap + (x - cap) * slope
     if name == "log1p":
         return math.log1p(max(x, 0.0)) * _num(p.get("scale", 1.0))
     raise ValueError(f"Unknown transform '{name}'")

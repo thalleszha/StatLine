@@ -5,7 +5,6 @@ import os
 import sys
 from typing import Optional, TextIO
 
-
 # Env knobs:
 #   STATLINE_LOG_LEVEL: DEBUG|INFO|WARNING|ERROR|CRITICAL  (default: INFO)
 #   STATLINE_LOG_FORMAT: "plain" (default) | "verbose"

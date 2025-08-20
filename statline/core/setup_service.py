@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Any, Optional, Dict, Iterable
+from typing import Any, Dict, Iterable, Mapping, Optional
 
+from .adapters import Adapter, load_adapter
 from .db import get_conn
 from .guild_manager import now_ts
-from .adapters import load_adapter, Adapter
 
 
 @dataclass(frozen=True)

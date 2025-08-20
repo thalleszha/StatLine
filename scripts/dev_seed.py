@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import typer
-
+from statline.core.adapters import load as load_adapter
 from statline.core.db import get_conn
 from statline.core.guild_manager import ensure_guild_entry, now_ts
-from statline.core.adapters import load as load_adapter
 
 app = typer.Typer(no_args_is_help=True)
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import sys
 import sqlite3
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
+
 
 # -----------------------------------------------------------------------------
 # Platform-aware default path (no extra deps)

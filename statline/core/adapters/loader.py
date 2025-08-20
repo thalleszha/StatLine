@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict, Any, List, Mapping, Optional, Tuple, cast
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
+
 import yaml
 
-from .types import AdapterSpec, MetricSpec, EffSpec
+from .types import AdapterSpec, EffSpec, MetricSpec
 
 _BASE = Path(__file__).parent / "defs"
 

@@ -1,5 +1,6 @@
-from time import perf_counter
 from contextlib import contextmanager
+from time import perf_counter
+
 
 class StageTimes:
     def __init__(self):

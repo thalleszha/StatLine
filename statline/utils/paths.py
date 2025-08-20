@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
+
 
 def project_caps_dir(cwd: Path | None = None) -> Path:
     base = cwd or Path.cwd()

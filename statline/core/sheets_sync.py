@@ -1,11 +1,11 @@
 # statline/services/sheets_sync.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Optional, Mapping, Protocol, runtime_checkable, cast
+from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, cast, runtime_checkable
 
-from statline.core.guild_manager import get_guild_config, now_ts, GuildConfig
+from statline.core.adapters import load_adapter, supported_adapters  # registry
 from statline.core.db import get_conn
-from statline.core.adapters import supported_adapters, load_adapter  # registry
+from statline.core.guild_manager import GuildConfig, get_guild_config, now_ts
 from statline.io.sheets import fetch_rows_from_sheets
 
 # ──────────────────────────────────────────────────────────────────────────────

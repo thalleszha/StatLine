@@ -1,6 +1,8 @@
 # statline/core/adapters/hooks.py
 from __future__ import annotations
-from typing import Protocol, Dict, Any, Iterable, Optional
+
+from typing import Any, Dict, Iterable, Protocol
+
 
 class AdapterHooks(Protocol):
     # Called before mapping expressions run; can mutate/augment row

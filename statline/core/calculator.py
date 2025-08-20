@@ -1,13 +1,17 @@
 # statline/core/calculator.py
 from __future__ import annotations
 
-import os, sys
-from typing import Dict, Any, List, Optional, Mapping, Callable, cast, Tuple
+import os
+import sys
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
+
 import typer
 
-from .adapters import list_names, load as load_adapter
-from .scoring import calculate_pri
 from statline.utils.timing import StageTimes
+
+from .adapters import list_names
+from .adapters import load as load_adapter
+from .scoring import calculate_pri
 
 try:
     from rich.console import Console
