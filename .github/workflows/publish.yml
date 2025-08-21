@@ -1,52 +1,55 @@
-name: Publish
+name: Publish to PyPI (token)
 
 on:
   push:
-    tags: ['v*.*.*']
+    tags:
+      - 'v*.*.*'      # v1.2.3
+      - '*.*.*'       # 1.2.3
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: "pypi"
+        type: choice
+        options: [pypi, testpypi]
 
 permissions:
   contents: read
-  packages: write   # needed for GitHub Packages upload
-
-env:
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  PYTHONUTF8: "1"
 
 jobs:
   build:
-    name: Build dists
+    name: Build sdist & wheel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
         with:
-          python-version: '3.13'
-
+          python-version: "3.13"
       - run: uv venv --python 3.13
+
       - run: uv pip install build twine
 
-      # Build
-      - name: Build sdist & wheel
+      - name: Build
         run: uv run python -m build
 
-      # Sanity-check metadata
       - name: Twine check
         run: uv run python -m twine check dist/*
 
-      # Ensure tag (vX.Y.Z) matches pyproject [project].version
-      - name: Verify tag matches project version
+      - name: Verify tag matches project.version (only on tag pushes)
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           uv run python - <<'PY'
-          import os, sys, pathlib, tomllib
-          tag = os.environ["GITHUB_REF_NAME"]   # like v1.2.3
+          import os, sys, tomllib, pathlib
+          tag = os.environ["GITHUB_REF_NAME"]
           want = tag[1:] if tag.startswith("v") else tag
-          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
           have = data["project"]["version"]
           if have != want:
-              print(f"Tag {tag} does not match pyproject version {have}", file=sys.stderr)
+              print(f"Tag {tag} != pyproject version {have}", file=sys.stderr)
               sys.exit(1)
-          print(f"Version OK: tag={tag} pyproject={have}")
+          print(f"Version OK: {have}")
           PY
 
       - uses: actions/upload-artifact@v4
@@ -54,46 +57,26 @@ jobs:
           name: dist
           path: dist/*
 
-  pypi:
+  publish-pypi:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    # Run when:
+    #  - Tag push (normal release), OR
+    #  - Manual dispatch with target == pypi
+    if: >
+      startsWith(github.ref, 'refs/tags/')
+      || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
 
-      # Uses PyPI token stored at:  Settings → Secrets → Actions → PYPI_API_TOKEN
-      - name: Publish to PyPI
+      - name: Publish (PyPI via token)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
-          user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
-
-  github-packages:
-    name: Publish to GitHub Packages
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: '3.13'
-      - run: uv venv --python 3.13
-      - run: uv pip install twine
-
-      # Upload to GitHub Packages' Python registry so it appears on the Packages tab
-      - name: Upload to GitHub Packages
-        env:
-          TWINE_USERNAME: ${{ github.actor }}
-          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          uv run python -m twine upload \
-            --repository-url "https://pypi.pkg.github.com/${{ github.repository_owner }}" \
-            dist/*
+          skip-existing: true
+          verbose: true
