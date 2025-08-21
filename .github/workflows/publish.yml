@@ -1,14 +1,12 @@
-name: Publish (PyPI / TestPyPI, token)
+# .github/workflows/publish.yml
+name: Publish (PyPI / TestPyPI / GitHub Packages)
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'   # e.g. v1.2.3
-      - '*.*.*'    # e.g. 1.2.3
+  push: {}  # publish on ANY push (branches or tags)
   workflow_dispatch:
     inputs:
       target:
-        description: "Where to publish"
+        description: "Manual publish target (PyPI/TestPyPI)"
         required: true
         default: "pypi"
         type: choice
@@ -16,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  packages: write   # needed for GitHub Packages upload with GITHUB_TOKEN
 
 jobs:
   build:
@@ -28,11 +27,15 @@ jobs:
           python-version: "3.13"
       - run: uv venv --python 3.13
       - run: uv pip install build twine
+
       - name: Build
         run: uv run python -m build
+
       - name: Twine check
         run: uv run python -m twine check dist/*
-      - name: Verify tag matches project.version (only on tag pushes)
+
+      # Optional guard: only validate tag↔version when this push is a tag
+      - name: Verify tag matches project.version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           uv run python - <<'PY'
@@ -51,24 +54,27 @@ jobs:
               sys.exit(1)
           print(f"Version OK: {have}")
           PY
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/*
 
   publish-pypi:
-    name: Publish to PyPI
+    name: Publish to PyPI (token)
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/') ||
-            (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi') }}
-    env:
-      PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
+
+      # Load token into env (avoids using secrets in an `if:` expression)
+      - name: "Load PyPI token"
+        shell: bash
+        run: echo "PYPI_TOKEN=${{ secrets.PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
+
       - id: gate
         name: "Gate: require token"
         shell: bash
@@ -79,11 +85,69 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "PYPI token not configured; skipping publish."
           fi
+
       - name: Publish (PyPI via token)
         if: steps.gate.outputs.ok == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
           password: ${{ env.PYPI_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+  publish-testpypi:
+    name: Publish to TestPyPI (token)
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: "Load TestPyPI token"
+        shell: bash
+        run: echo "TEST_PYPI_TOKEN=${{ secrets.TEST_PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
+
+      - id: gate
+        name: "Gate: require token"
+        shell: bash
+        run: |
+          if [ -n "${TEST_PYPI_TOKEN:-}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "TestPyPI token not configured; skipping publish."
+          fi
+
+      - name: Publish (TestPyPI via token)
+        if: steps.gate.outputs.ok == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          password: ${{ env.TEST_PYPI_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+  publish-github-packages:
+    name: Publish to GitHub Packages (Python)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Uses GITHUB_TOKEN with packages:write permission
+      - name: Publish (GitHub Packages)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://pypi.pkg.github.com/${{ github.repository_owner }}
+          packages-dir: dist
+          user: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
           skip-existing: true
           verbose: true
