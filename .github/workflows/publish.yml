@@ -1,5 +1,4 @@
-# .github/workflows/publish.yml
-name: Publish to PyPI (token)
+name: Publish
 
 on:
   push:
@@ -7,9 +6,15 @@ on:
 
 permissions:
   contents: read
+  packages: write   # needed for GitHub Packages upload
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
 
 jobs:
-  pypi:
+  build:
+    name: Build dists
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,12 +22,78 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: '3.13'
+
       - run: uv venv --python 3.13
+      - run: uv pip install build twine
 
-      - run: uv pip install build
-      - run: uv run python -m build
+      # Build
+      - name: Build sdist & wheel
+        run: uv run python -m build
 
+      # Sanity-check metadata
+      - name: Twine check
+        run: uv run python -m twine check dist/*
+
+      # Ensure tag (vX.Y.Z) matches pyproject [project].version
+      - name: Verify tag matches project version
+        run: |
+          uv run python - <<'PY'
+          import os, sys, pathlib, tomllib
+          tag = os.environ["GITHUB_REF_NAME"]   # like v1.2.3
+          want = tag[1:] if tag.startswith("v") else tag
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          have = data["project"]["version"]
+          if have != want:
+              print(f"Tag {tag} does not match pyproject version {have}", file=sys.stderr)
+              sys.exit(1)
+          print(f"Version OK: tag={tag} pyproject={have}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Uses PyPI token stored at:  Settings → Secrets → Actions → PYPI_API_TOKEN
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}   # add in Repo → Settings → Secrets
+          packages-dir: dist
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  github-packages:
+    name: Publish to GitHub Packages
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: '3.13'
+      - run: uv venv --python 3.13
+      - run: uv pip install twine
+
+      # Upload to GitHub Packages' Python registry so it appears on the Packages tab
+      - name: Upload to GitHub Packages
+        env:
+          TWINE_USERNAME: ${{ github.actor }}
+          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          uv run python -m twine upload \
+            --repository-url "https://pypi.pkg.github.com/${{ github.repository_owner }}" \
+            dist/*
