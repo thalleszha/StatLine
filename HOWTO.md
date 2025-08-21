@@ -8,7 +8,7 @@
 
 ```plaintext
 StatLine/
-├── how-to.md        ← this file (top level)
+├── HOWTO.md        ← this file (top level)
 └── statline/
     └── core/
         └── adapters/
