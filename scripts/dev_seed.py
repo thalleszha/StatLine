@@ -19,12 +19,13 @@ TEST_GUILD_ID = "dev-guild"
 # ──────────────────────────────────────────────────────────────────────────────
 # IO helpers (YAML/CSV) — same conventions as CLI
 # ──────────────────────────────────────────────────────────────────────────────
+_resources: Optional[ModuleType]
 try:
-    import importlib.resources as _resources
-    resources: Optional[ModuleType] = _resources
+    import importlib.resources as _resources_mod
+    _resources = _resources_mod
 except Exception:
-    resources = None
-
+    _resources = None
+resources: Optional[ModuleType] = _resources
 try:
     import yaml
 except Exception:
