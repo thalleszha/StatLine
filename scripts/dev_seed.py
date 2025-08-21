@@ -19,6 +19,7 @@ TEST_GUILD_ID = "dev-guild"
 # ──────────────────────────────────────────────────────────────────────────────
 # IO helpers (YAML/CSV) — same conventions as CLI
 # ──────────────────────────────────────────────────────────────────────────────
+
 def _load_importlib_resources() -> Optional[ModuleType]:
     """Return the importlib.resources module if available, else None."""
     try:
@@ -26,12 +27,15 @@ def _load_importlib_resources() -> Optional[ModuleType]:
     except Exception:
         return None
     return m
+
+# Optional module holders (never reassign an imported module symbol)
 resources: Optional[ModuleType] = _load_importlib_resources()
 
 try:
-    import yaml
+    import yaml as _yaml_mod
 except Exception:
-    yaml = None
+    _yaml_mod = None
+yaml: Optional[ModuleType] = _yaml_mod
 
 def _iter_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
     sfx = input_path.suffix.lower()
