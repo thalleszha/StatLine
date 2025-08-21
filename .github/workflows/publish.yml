@@ -1,8 +1,7 @@
-# .github/workflows/publish.yml
 name: Publish (PyPI / TestPyPI / GitHub Packages)
 
 on:
-  push: {}  # publish on ANY push (branches or tags)
+  push: {}
   workflow_dispatch:
     inputs:
       target:
@@ -14,7 +13,7 @@ on:
 
 permissions:
   contents: read
-  packages: write   # needed for GitHub Packages upload with GITHUB_TOKEN
+  packages: write
 
 jobs:
   build:
@@ -27,14 +26,10 @@ jobs:
           python-version: "3.13"
       - run: uv venv --python 3.13
       - run: uv pip install build twine
-
       - name: Build
         run: uv run python -m build
-
       - name: Twine check
         run: uv run python -m twine check dist/*
-
-      # Optional guard: only validate tag↔version when this push is a tag
       - name: Verify tag matches project.version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -54,7 +49,6 @@ jobs:
               sys.exit(1)
           print(f"Version OK: {have}")
           PY
-
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -69,12 +63,9 @@ jobs:
         with:
           name: dist
           path: dist
-
-      # Load token into env (avoids using secrets in an `if:` expression)
-      - name: "Load PyPI token"
+      - name: Load PyPI token
         shell: bash
         run: echo "PYPI_TOKEN=${{ secrets.PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
-
       - id: gate
         name: "Gate: require token"
         shell: bash
@@ -85,7 +76,6 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "PYPI token not configured; skipping publish."
           fi
-
       - name: Publish (PyPI via token)
         if: steps.gate.outputs.ok == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -105,11 +95,9 @@ jobs:
         with:
           name: dist
           path: dist
-
-      - name: "Load TestPyPI token"
+      - name: Load TestPyPI token
         shell: bash
         run: echo "TEST_PYPI_TOKEN=${{ secrets.TEST_PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
-
       - id: gate
         name: "Gate: require token"
         shell: bash
@@ -120,7 +108,6 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "TestPyPI token not configured; skipping publish."
           fi
-
       - name: Publish (TestPyPI via token)
         if: steps.gate.outputs.ok == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -140,12 +127,10 @@ jobs:
         with:
           name: dist
           path: dist
-
-      # Uses GITHUB_TOKEN with packages:write permission
       - name: Publish (GitHub Packages)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: https://pypi.pkg.github.com/${{ github.repository_owner }}
+          repository-url: https://pypi.pkg.github.com/${{ github.repository_owner }}/
           packages-dir: dist
           user: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
