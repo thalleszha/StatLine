@@ -46,8 +46,6 @@ Thumbs.db
 # Env / secrets
 .env
 .env.*
-secrets/
-secrets/*
 !secrets/.gitkeep
 
 # Local data/state
