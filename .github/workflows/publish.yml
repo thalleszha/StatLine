@@ -1,7 +1,7 @@
 name: Publish (PyPI / TestPyPI / GitHub Packages)
 
 on:
-  push: {}                      # publish on ANY push (tags or branches)
+  push: {}
   workflow_dispatch:
     inputs:
       target:
@@ -13,7 +13,7 @@ on:
 
 permissions:
   contents: read
-  packages: write               # needed for GitHub Packages upload with GITHUB_TOKEN
+  packages: write
 
 jobs:
   build:
@@ -26,14 +26,10 @@ jobs:
           python-version: "3.13"
       - run: uv venv --python 3.13
       - run: uv pip install build twine
-
       - name: Build
         run: uv run python -m build
-
       - name: Twine check
         run: uv run python -m twine check dist/*
-
-      # Optional guard: only validate tag↔version when this push is a tag
       - name: Verify tag matches project.version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -53,7 +49,6 @@ jobs:
               sys.exit(1)
           print(f"Version OK: {have}")
           PY
-
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -68,12 +63,9 @@ jobs:
         with:
           name: dist
           path: dist
-
-      # Load token into env (avoids using secrets inside an `if:` expression)
-      - name: "Load PyPI token"
+      - name: Load PyPI token
         shell: bash
         run: echo "PYPI_TOKEN=${{ secrets.PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
-
       - id: gate
         name: "Gate: require token"
         shell: bash
@@ -84,7 +76,6 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "PYPI token not configured; skipping publish."
           fi
-
       - name: Publish (PyPI via token)
         if: steps.gate.outputs.ok == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -104,11 +95,9 @@ jobs:
         with:
           name: dist
           path: dist
-
-      - name: "Load TestPyPI token"
+      - name: Load TestPyPI token
         shell: bash
         run: echo "TEST_PYPI_TOKEN=${{ secrets.TEST_PYPI_API_TOKEN }}" >> "$GITHUB_ENV"
-
       - id: gate
         name: "Gate: require token"
         shell: bash
@@ -119,7 +108,6 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "TestPyPI token not configured; skipping publish."
           fi
-
       - name: Publish (TestPyPI via token)
         if: steps.gate.outputs.ok == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -129,38 +117,3 @@ jobs:
           password: ${{ env.TEST_PYPI_TOKEN }}
           skip-existing: true
           verbose: true
-
-  publish-gh-packages:
-    name: Publish to GitHub Packages (Python)
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: "3.13"
-      - run: uv venv --python 3.13
-      - run: uv pip install twine
-
-      # Use the built-in GITHUB_TOKEN (no extra secret needed)
-      - name: Upload to GitHub Packages
-        env:
-          TWINE_USERNAME: ${{ github.actor }}
-          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Try ORG endpoint first, then USER endpoint (works for personal repos)
-          ORG_URL="https://api.github.com/orgs/${OWNER}/packages/pypi/upload"
-          USER_URL="https://api.github.com/users/${OWNER}/packages/pypi/upload"
-          echo "Trying GitHub Packages upload (org endpoint)…"
-          if uv run python -m twine upload --repository-url "$ORG_URL" dist/*; then
-            exit 0
-          fi
-          echo "Org upload failed; trying user endpoint…"
-          uv run python -m twine upload --repository-url "$USER_URL" dist/*
