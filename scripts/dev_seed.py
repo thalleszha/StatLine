@@ -5,7 +5,7 @@ import csv
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, Sequence, Tuple, cast
 
 import typer
 from statline.core.adapters import load as load_adapter
@@ -31,28 +31,45 @@ def _load_importlib_resources() -> Optional[ModuleType]:
 # Optional module holders (never reassign an imported module symbol)
 resources: Optional[ModuleType] = _load_importlib_resources()
 
+class _YamlLike(Protocol):
+    def safe_load(self, s: str) -> Any: ...
+    CSafeLoader: Any
+    SafeLoader: Any
+
 try:
-    import yaml as _yaml_mod
+    import yaml as _yaml_import
+    yaml_mod: Optional[_YamlLike] = cast(_YamlLike, _yaml_import)
 except Exception:
-    _yaml_mod = None
-yaml: Optional[ModuleType] = _yaml_mod
+    yaml_mod = None
 
 def _iter_rows(input_path: Path) -> Iterable[Dict[str, Any]]:
     sfx = input_path.suffix.lower()
     if sfx in {".yaml", ".yml"}:
-        if yaml is None:
+        if yaml_mod is None:
             raise typer.BadParameter("PyYAML not installed; cannot read YAML.")
-        data = yaml.safe_load(input_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and "rows" in data and isinstance(data["rows"], list):
-            for r in data["rows"]:   # pyright: ignore[reportUnknownVariableType]
-                if isinstance(r, dict):
-                    yield r
+
+        data_any: Any = yaml_mod.safe_load(input_path.read_text(encoding="utf-8"))
+
+        # Case 1: {"rows": [...]}
+        if isinstance(data_any, Mapping):
+            data_map = cast(Mapping[str, Any], data_any)  # nail key/value types
+            rows_obj: Any = data_map.get("rows")
+            if not isinstance(rows_obj, list):
+                raise typer.BadParameter("YAML must be list[dict] or {rows: list[dict]}.")
+            for r_any in cast(Sequence[object], rows_obj):
+                if isinstance(r_any, Mapping):
+                    r_map = cast(Mapping[str, Any], r_any)
+                    yield {str(k): v for k, v in r_map.items()}
             return
-        if isinstance(data, list):
-            for r in data:   # pyright: ignore[reportUnknownVariableType]
-                if isinstance(r, dict):
-                    yield r
+
+        # Case 2: top-level list
+        if isinstance(data_any, list):
+            for r_any in cast(Sequence[object], data_any):
+                if isinstance(r_any, Mapping):
+                    r_map = cast(Mapping[str, Any], r_any)
+                    yield {str(k): v for k, v in r_map.items()}
             return
+
         raise typer.BadParameter("YAML must be list[dict] or {rows: list[dict]}.")
     elif sfx == ".csv":
         with input_path.open("r", encoding="utf-8", newline="") as f:
