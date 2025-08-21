@@ -1,115 +1,47 @@
-[build-system]
-requires = ["hatchling>=1.24"]
-build-backend = "hatchling.build"
-
 [project]
 name = "statline"
 version = "0.1.0"
-description = "StatLine — weighted player scoring, efficiency modeling, and Discord tooling"
-readme = "README.md"
-requires-python = ">=3.10"
-license = { file = "LICENSE" }
-authors = [{ name = "StatLine" }]
-keywords = ["basketball", "analytics", "mvp", "efg", "discord", "google-sheets"]
-
-# Runtime deps for CLI and core library
+requires-python = ">=3.10,<3.14"
 dependencies = [
   "typer>=0.12",
   "pyyaml>=6",
-]
-
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "License :: OSI Approved :: GNU Affero General Public License v3",
-  "Intended Audience :: Developers",
-  "Intended Audience :: Science/Research",
-  "Topic :: Scientific/Engineering :: Information Analysis",
-  "Topic :: Software Development :: Libraries :: Python Modules",
-  "Environment :: Console",
+  'typing-extensions>=4.7; python_version < "3.11"',
 ]
 
 [project.optional-dependencies]
-# Enable Google Sheets ingestion.
-sheets = [
-  "gspread>=6.0.0",
-  "google-auth>=2.0.0",
-]
-# Discord bot runtime (Orion)
-discord = [
-  "hikari>=2.0.0.dev121",
-  "hikari-lightbulb>=2.3.3",
-  "aiohttp>=3.8",
-  "python-dotenv>=1.0.1",
-]
-# Dev & QA
+sheets = ["gspread>=6.0.0", "google-auth>=2.0.0"]
 dev = [
-  "pytest>=7.0",
+  "pytest>=8.1",
   "pytest-cov>=4.1",
   "ruff>=0.5",
-  "mypy>=1.6",
-  "coverage>=7.2",
+  "mypy>=1.11",           # 3.13-friendly
+  "coverage>=7.5",
   "hypothesis>=6.100",
   "types-PyYAML",
 ]
 
-[project.scripts]
-# Keep this if cli.py defines `def main(): app()`
-statline = "statline.cli:main"
-
-[project.urls]
-Homepage = "https://github.com/amillolive/StatLine"
-Repository = "https://github.com/amillolive/StatLine"
-Issues = "https://github.com/amillolive/StatLine/issues"
-
-# ------------------------
-# Tooling configuration
-# ------------------------
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-extend-select = ["I"]
-src = ["statline", "tests"]
+cli-pretty = ["rich>=13.0"]
 
 [tool.mypy]
 python_version = "3.10"
-warn_unused_configs = true
-disallow_untyped_defs = false
-warn_redundant_casts = true
-warn_unused_ignores = true
-show_error_codes = true
-pretty = true
+strict = true
 ignore_missing_imports = true
+pretty = true
+# (or keep your current block if you prefer non-strict locally)
 
-[tool.pytest.ini_options]
-# Keep logs useful in CI; junit XML is configured in workflow.
-addopts = "-ra"
-testpaths = ["tests"]
-# Uncomment to fail CI on empty test files:
-# fail_on_empty = true
-
-# ------------------------
-# Hatchling build config
-# ------------------------
-
-# Include the package plus all non-Python assets needed at runtime (YAML, JSON, SQL)
 [tool.hatch.build.targets.wheel]
 packages = ["statline"]
 include = [
-  "statline/data/**/*",                 # example.yaml, max_stats.json, etc.
-  "statline/core/adapters/defs/*",      # bundled adapter definitions
-  "statline/data/migrations/*.sql",     # DB migrations
+  "statline/py.typed",
+  "statline/**/*.yaml",
+  "statline/**/*.yml",
+  "statline/**/*.json",
+  "statline/**/*.sql",
+  # keep any explicit includes you rely on:
+  "statline/data/**/*",
+  "statline/core/adapters/defs/*",
+  "statline/data/migrations/*.sql",
 ]
 
 [tool.hatch.build.targets.sdist]
-include = [
-  "statline",
-  "tests",
-  "README.md",
-  "LICENSE",
-  "pyproject.toml",
-]
+include = ["statline", "tests", "README.md", "LICENSE", "pyproject.toml"]

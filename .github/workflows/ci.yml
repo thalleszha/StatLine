@@ -36,14 +36,10 @@ jobs:
     timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.12"
-
-      # uv needs a venv before `uv pip` / `uv run`
-      - name: Create venv
-        run: uv venv --python 3.12
+          python-version: "3.13"
+      - run: uv venv --python 3.13
 
       - name: Cache ruff
         uses: actions/cache@v4
@@ -54,54 +50,35 @@ jobs:
       - name: Install ruff
         run: uv pip install ruff
 
-      # Non-blocking lint: auto-fix imports and other fixables, annotate, but don't fail the job
+      # Non-blocking lint: auto-fix & annotate without failing CI
       - name: Ruff autofix + annotate (non-blocking)
         run: |
           uv run ruff check . --fix --unsafe-fixes --output-format=github --exit-zero
           uv run ruff format .
 
-      # To enforce later, delete the step above and use this instead:
-      # - name: Ruff (gating)
-      #   run: uv run ruff check . --fix
-
   mypy:
-    name: Mypy (type check)
+    name: Mypy (type check on 3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.12"
+          python-version: "3.13"
+      - run: uv venv --python 3.13
 
-      - name: Create venv
-        run: uv venv --python 3.12
-
-      # Avoid stale caches causing misleading results; include mypy.ini and OS/Python in the key.
       - name: Cache mypy
         uses: actions/cache@v4
         with:
           path: .mypy_cache
-          key: mypy-${{ runner.os }}-py3.12-${{ hashFiles('mypy.ini', 'pyproject.toml', '**/*.py') }}
+          key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', '**/*.py') }}
 
-      # Pin mypy so local == CI (adjust the version if you want, just pin it).
-      - name: Install deps
-        run: uv pip install -e ".[dev]" "mypy==1.10.*"
+      - name: Install (dev)
+        run: uv pip install -e ".[dev]"
 
-      - name: Print versions
-        run: |
-          uv run python - <<'PY'
-          import sys
-          from mypy.version import __version__ as MV
-          print("Python:", sys.version)
-          print("mypy:", MV)
-          PY
-          uv run python -m mypy --version
+      - name: Type check (strict)
+        run: uv run python -m mypy --strict --ignore-missing-imports .
 
-      # Use module invocation to bypass any broken shebangs
-      - name: Run mypy
-        run: uv run python -m mypy --show-traceback --strict --ignore-missing-imports .
   tests:
     name: Tests (${{ matrix.os }} / py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
@@ -110,14 +87,17 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-latest", "macos-latest", "windows-latest"]
-        python: ["3.10", "3.11", "3.12"]
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: ${{ matrix.python }}
+
       - name: Create venv
         run: uv venv --python ${{ matrix.python }}
+
       - name: Cache uv
         uses: actions/cache@v4
         with:
@@ -125,27 +105,33 @@ jobs:
             ~/.cache/uv
             ${{ runner.os == 'Windows' && format('{0}\\uv\\cache', runner.temp) || '' }}
           key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
+
       - name: Install
         run: uv pip install -e ".[dev,sheets]" pytest pytest-cov
+
       - name: Prepare test results dir
         run: mkdir -p test-results
-      - name: Run tests
+
+      # Skip cleanly if no tests are present; otherwise run pytest with coverage
+      - name: Run tests (skip if none)
+        shell: bash
         run: |
-          set -e
-          set +e
+          shopt -s nullglob
+          files=(tests/test_*.py tests/*/test_*.py)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No tests detected, skipping pytest."
+            # Still produce empty coverage/junit artifacts so downstream steps don't choke
+            echo '<?xml version="1.0" ?><testsuite></testsuite>' > test-results/junit.xml
+            echo '<?xml version="1.0" ?><coverage></coverage>' > coverage.xml
+            exit 0
+          fi
           uv run pytest -ra \
             --maxfail=1 \
             --durations=10 \
             --cov=statline \
             --cov-report=xml \
             --junitxml=test-results/junit.xml
-          code=$?
-          set -e
-          if [ "$code" -eq 5 ]; then
-            echo "No tests collected; marking as success."
-            exit 0
-          fi
-          exit "$code"
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -155,6 +141,7 @@ jobs:
             test-results/junit.xml
             coverage.xml
           if-no-files-found: warn
+
       - name: PR coverage summary
         if: always() && github.event_name == 'pull_request'
         uses: irongut/CodeCoverageSummary@v1.3.0
@@ -173,9 +160,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Create venv
-        run: uv venv --python 3.12
+        run: uv venv --python 3.13
       - run: uv pip install build
       - name: Build sdist & wheel
         run: uv run python -m build
@@ -198,16 +185,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Create venv
-        run: uv venv --python 3.12
+        run: uv venv --python 3.13
+
       - name: Download built wheel
         uses: actions/download-artifact@v4
         with:
           name: dist-ubuntu
           path: dist
+
       - name: Install wheel
         run: uv pip install --no-deps dist/*.whl
+
       - name: Import package
         run: |
           uv run python - <<'PY'
@@ -215,6 +205,7 @@ jobs:
           importlib.import_module("statline")
           print("Import OK")
           PY
+
       - name: Adapters should exist
         run: |
           uv run python - <<'PY'
@@ -223,6 +214,7 @@ jobs:
           assert isinstance(n, list) and n, "No adapters discovered"
           print("Adapters:", n)
           PY
+
       - name: "CLI smoke: score example file if present"
         run: |
           EXAMPLE=$(uv run python - <<'PY'
@@ -236,7 +228,9 @@ jobs:
           )
           if [ -n "$EXAMPLE" ]; then
             echo "Scoring $EXAMPLE"
-            uv run python -m statline.cli score --file "$EXAMPLE" || uv run statline score --file "$EXAMPLE" || true
+            # Try a couple of entrypoints/signatures; do not fail the job
+            uv run python -m statline.cli score --adapter rbw5 "$EXAMPLE" || \
+            uv run statline score --adapter rbw5 "$EXAMPLE" || true
           else
             echo "No packaged example.yaml; skipping."
           fi
