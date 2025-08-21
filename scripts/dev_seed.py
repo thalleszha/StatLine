@@ -19,13 +19,15 @@ TEST_GUILD_ID = "dev-guild"
 # ──────────────────────────────────────────────────────────────────────────────
 # IO helpers (YAML/CSV) — same conventions as CLI
 # ──────────────────────────────────────────────────────────────────────────────
-_resources: Optional[ModuleType]
-try:
-    import importlib.resources as _resources_mod
-    _resources = _resources_mod
-except Exception:
-    _resources = None
-resources: Optional[ModuleType] = _resources
+def _load_importlib_resources() -> Optional[ModuleType]:
+    """Return the importlib.resources module if available, else None."""
+    try:
+        import importlib.resources as m  # noqa: F401
+    except Exception:
+        return None
+    return m
+resources: Optional[ModuleType] = _load_importlib_resources()
+
 try:
     import yaml
 except Exception:
