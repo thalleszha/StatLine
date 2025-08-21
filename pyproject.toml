@@ -1,7 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
 [project]
 name = "statline"
-version = "0.1.0"
+version = "1.0.0"
+description = "StatLine — weighted player scoring, efficiency modeling, and CLI tooling"
+readme = "README.md"
 requires-python = ">=3.10,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "StatLine" }]
+keywords = ["basketball", "analytics", "mvp", "efg", "discord", "google-sheets", "cli"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: GNU Affero General Public License v3",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Environment :: Console",
+]
+
 dependencies = [
   "typer>=0.12",
   "pyyaml>=6",
@@ -10,24 +33,52 @@ dependencies = [
 
 [project.optional-dependencies]
 sheets = ["gspread>=6.0.0", "google-auth>=2.0.0"]
+cli-pretty = ["rich>=13.0"]
 dev = [
   "pytest>=8.1",
   "pytest-cov>=4.1",
   "ruff>=0.5",
-  "mypy>=1.11",           # 3.13-friendly
+  "mypy>=1.11",
   "coverage>=7.5",
   "hypothesis>=6.100",
   "types-PyYAML",
 ]
 
-cli-pretty = ["rich>=13.0"]
+[project.scripts]
+statline = "statline.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/amillolive/StatLine"
+Repository = "https://github.com/amillolive/StatLine"
+Issues = "https://github.com/amillolive/StatLine/issues"
+
+# ------------------------
+# Tooling
+# ------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-select = ["I"]
+src = ["statline", "tests"]
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
 pretty = true
-# (or keep your current block if you prefer non-strict locally)
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+# fail_on_empty = true  # enable when you actually add tests
+
+# ------------------------
+# Hatch build config
+# ------------------------
 
 [tool.hatch.build.targets.wheel]
 packages = ["statline"]
@@ -37,11 +88,17 @@ include = [
   "statline/**/*.yml",
   "statline/**/*.json",
   "statline/**/*.sql",
-  # keep any explicit includes you rely on:
+  # keep explicit includes relied upon at runtime:
   "statline/data/**/*",
   "statline/core/adapters/defs/*",
   "statline/data/migrations/*.sql",
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["statline", "tests", "README.md", "LICENSE", "pyproject.toml"]
+include = [
+  "statline",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
