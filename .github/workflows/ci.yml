@@ -204,30 +204,24 @@ jobs:
           name: dist-ubuntu
           path: dist
 
+      # Install WITH deps to simulate `pip install statline` (no extras)
       - name: Install wheel (base, no extras)
         run: uv pip install dist/*.whl
 
       - name: Import package
         run: |
-          uv run python - <<'PY'
-          import importlib
-          importlib.import_module("statline")
-          print("Import OK")
-          PY
+          uv run python -c "import importlib; importlib.import_module('statline'); print('Import OK')"
 
       # --- BOTH FORMS: console script (if present) and module entry point ---
       - name: CLI help (console script if present)
         shell: bash
         run: |
-          BIN_DIR=$(uv run python - <<'PY'
-          import sys, pathlib
-          print(pathlib.Path(sys.executable).parent)
-          PY
-          )
-          if [ -x "$BIN_DIR/statline" ]; then
-            "$BIN_DIR/statline" --help
-          elif [ -x "$BIN_DIR/statline.exe" ]; then
-            "$BIN_DIR/statline.exe" --help
+          set -e
+          BIN_DIR=$(uv run python -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent)")
+          if [[ -x \"$BIN_DIR/statline\" ]]; then
+            \"$BIN_DIR/statline\" --help
+          elif [[ -x \"$BIN_DIR/statline.exe\" ]]; then
+            \"$BIN_DIR/statline.exe\" --help
           else
             echo "Console script not found in venv; continuing."
           fi
@@ -237,40 +231,24 @@ jobs:
 
       - name: Adapters should exist
         run: |
-          uv run python - <<'PY'
-          from statline.core.adapters import list_names
-          n = list_names()
-          assert isinstance(n, list) and n, "No adapters discovered"
-          print("Adapters:", n)
-          PY
+          uv run python -c "from statline.core.adapters import list_names as L; n=L(); assert isinstance(n, list) and n, 'No adapters discovered'; print('Adapters:', n)"
 
       - name: "CLI smoke: score packaged example (both forms)"
         shell: bash
         run: |
-          EXAMPLE=$(uv run python - <<'PY'
-          from importlib.resources import files
-          p = files("statline.data") / "example.yaml"
-          try:
-            print(str(p) if p.is_file() else "", end="")
-          except Exception:
-            print("", end="")
-          PY
-          )
+          set -e
+          EXAMPLE=$(uv run python -c "from importlib.resources import files; p=files('statline.data')/'example.yaml'; import sys; print(str(p) if p.is_file() else '', end='')")
           if [ -n "$EXAMPLE" ]; then
             echo "Scoring (module): $EXAMPLE"
             uv run python -m statline.cli score --adapter rbw5 "$EXAMPLE"
 
-            BIN_DIR=$(uv run python - <<'PY'
-            import sys, pathlib
-            print(pathlib.Path(sys.executable).parent)
-            PY
-            )
-            if [ -x "$BIN_DIR/statline" ]; then
+            BIN_DIR=$(uv run python -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent)")
+            if [[ -x \"$BIN_DIR/statline\" ]]; then
               echo "Scoring (console script): $EXAMPLE"
-              "$BIN_DIR/statline" score --adapter rbw5 "$EXAMPLE"
-            elif [ -x "$BIN_DIR/statline.exe" ]; then
+              \"$BIN_DIR/statline\" score --adapter rbw5 "$EXAMPLE"
+            elif [[ -x \"$BIN_DIR/statline.exe\" ]]; then
               echo "Scoring (console script): $EXAMPLE"
-              "$BIN_DIR/statline.exe" score --adapter rbw5 "$EXAMPLE"
+              \"$BIN_DIR/statline.exe\" score --adapter rbw5 "$EXAMPLE"
             else
               echo "Console script not found; module path already validated."
             fi
