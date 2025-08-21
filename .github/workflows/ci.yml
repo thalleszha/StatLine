@@ -120,7 +120,7 @@ jobs:
           files=(tests/test_*.py tests/*/test_*.py)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No tests detected, skipping pytest."
-            # Still produce empty coverage/junit artifacts so downstream steps don't choke
+            # Produce empty artifacts so downstream steps don't choke
             echo '<?xml version="1.0" ?><testsuite></testsuite>' > test-results/junit.xml
             echo '<?xml version="1.0" ?><coverage></coverage>' > coverage.xml
             exit 0
@@ -173,7 +173,7 @@ jobs:
           path: dist/*
 
   smoke:
-    name: Install & Smoke (${{ matrix.os }})
+    name: Base install & CLI smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     needs: [build]
@@ -195,8 +195,9 @@ jobs:
           name: dist-ubuntu
           path: dist
 
-      - name: Install wheel
-        run: uv pip install --no-deps dist/*.whl
+      # IMPORTANT: install WITH dependencies to simulate `pip install statline`
+      - name: Install wheel (base, no extras)
+        run: uv pip install dist/*.whl
 
       - name: Import package
         run: |
@@ -205,6 +206,9 @@ jobs:
           importlib.import_module("statline")
           print("Import OK")
           PY
+
+      - name: CLI exists and shows help
+        run: uv run statline --help
 
       - name: Adapters should exist
         run: |
@@ -215,7 +219,7 @@ jobs:
           print("Adapters:", n)
           PY
 
-      - name: "CLI smoke: score example file if present"
+      - name: "CLI smoke: score packaged example if present"
         run: |
           EXAMPLE=$(uv run python - <<'PY'
           from importlib.resources import files
@@ -228,9 +232,7 @@ jobs:
           )
           if [ -n "$EXAMPLE" ]; then
             echo "Scoring $EXAMPLE"
-            # Try a couple of entrypoints/signatures; do not fail the job
-            uv run python -m statline.cli score --adapter rbw5 "$EXAMPLE" || \
-            uv run statline score --adapter rbw5 "$EXAMPLE" || true
+            uv run statline score --adapter rbw5 "$EXAMPLE"
           else
             echo "No packaged example.yaml; skipping."
           fi
