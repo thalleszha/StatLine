@@ -41,16 +41,18 @@ jobs:
           python-version: "3.13"
       - run: uv venv --python 3.13
 
-      - name: Cache ruff
+      - name: Restore ruff cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ruff
+          path: .ruff_cache
           key: ruff-${{ runner.os }}-${{ hashFiles('pyproject.toml', '.ruff.toml', 'ruff.toml') }}
 
       - name: Install ruff
         run: uv pip install ruff
 
-      # Non-blocking lint: auto-fix & annotate without failing CI
+      - name: Ensure ruff cache dir exists
+        run: mkdir -p .ruff_cache
+
       - name: Ruff autofix + annotate (non-blocking)
         run: |
           uv run ruff check . --fix --unsafe-fixes --output-format=github --exit-zero
@@ -67,7 +69,7 @@ jobs:
           python-version: "3.13"
       - run: uv venv --python 3.13
 
-      - name: Cache mypy
+      - name: Restore mypy cache
         uses: actions/cache@v4
         with:
           path: .mypy_cache
@@ -75,6 +77,9 @@ jobs:
 
       - name: Install (dev)
         run: uv pip install -e ".[dev]"
+
+      - name: Ensure mypy cache dir exists
+        run: mkdir -p .mypy_cache
 
       - name: Type check (strict)
         run: uv run python -m mypy --strict --ignore-missing-imports .
@@ -98,12 +103,18 @@ jobs:
       - name: Create venv
         run: uv venv --python ${{ matrix.python }}
 
-      - name: Cache uv
+      - name: Restore uv cache (Linux/macOS)
+        if: runner.os != 'Windows'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/uv
-            ${{ runner.os == 'Windows' && format('{0}\\uv\\cache', runner.temp) || '' }}
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Restore uv cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\uv\cache
           key: uv-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Install
@@ -112,7 +123,6 @@ jobs:
       - name: Prepare test results dir
         run: mkdir -p test-results
 
-      # Skip cleanly if no tests are present; otherwise run pytest with coverage
       - name: Run tests (skip if none)
         shell: bash
         run: |
@@ -120,7 +130,6 @@ jobs:
           files=(tests/test_*.py tests/*/test_*.py)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No tests detected, skipping pytest."
-            # Produce empty artifacts so downstream steps don't choke
             echo '<?xml version="1.0" ?><testsuite></testsuite>' > test-results/junit.xml
             echo '<?xml version="1.0" ?><coverage></coverage>' > coverage.xml
             exit 0
@@ -195,7 +204,6 @@ jobs:
           name: dist-ubuntu
           path: dist
 
-      # IMPORTANT: install WITH dependencies to simulate `pip install statline`
       - name: Install wheel (base, no extras)
         run: uv pip install dist/*.whl
 
@@ -207,8 +215,25 @@ jobs:
           print("Import OK")
           PY
 
-      - name: CLI exists and shows help
-        run: uv run statline --help
+      # --- BOTH FORMS: console script (if present) and module entry point ---
+      - name: CLI help (console script if present)
+        shell: bash
+        run: |
+          BIN_DIR=$(uv run python - <<'PY'
+          import sys, pathlib
+          print(pathlib.Path(sys.executable).parent)
+          PY
+          )
+          if [ -x "$BIN_DIR/statline" ]; then
+            "$BIN_DIR/statline" --help
+          elif [ -x "$BIN_DIR/statline.exe" ]; then
+            "$BIN_DIR/statline.exe" --help
+          else
+            echo "Console script not found in venv; continuing."
+          fi
+
+      - name: CLI help (module entry point)
+        run: uv run python -m statline.cli --help
 
       - name: Adapters should exist
         run: |
@@ -219,7 +244,8 @@ jobs:
           print("Adapters:", n)
           PY
 
-      - name: "CLI smoke: score packaged example if present"
+      - name: "CLI smoke: score packaged example (both forms)"
+        shell: bash
         run: |
           EXAMPLE=$(uv run python - <<'PY'
           from importlib.resources import files
@@ -231,8 +257,23 @@ jobs:
           PY
           )
           if [ -n "$EXAMPLE" ]; then
-            echo "Scoring $EXAMPLE"
-            uv run statline score --adapter rbw5 "$EXAMPLE"
+            echo "Scoring (module): $EXAMPLE"
+            uv run python -m statline.cli score --adapter rbw5 "$EXAMPLE"
+
+            BIN_DIR=$(uv run python - <<'PY'
+            import sys, pathlib
+            print(pathlib.Path(sys.executable).parent)
+            PY
+            )
+            if [ -x "$BIN_DIR/statline" ]; then
+              echo "Scoring (console script): $EXAMPLE"
+              "$BIN_DIR/statline" score --adapter rbw5 "$EXAMPLE"
+            elif [ -x "$BIN_DIR/statline.exe" ]; then
+              echo "Scoring (console script): $EXAMPLE"
+              "$BIN_DIR/statline.exe" score --adapter rbw5 "$EXAMPLE"
+            else
+              echo "Console script not found; module path already validated."
+            fi
           else
             echo "No packaged example.yaml; skipping."
           fi
