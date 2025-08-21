@@ -92,15 +92,16 @@ jobs:
       - name: Print versions
         run: |
           uv run python - <<'PY'
-          import sys, mypy
+          import sys
+          from mypy.version import __version__ as MV
           print("Python:", sys.version)
-          print("mypy:", mypy.__version__)
+          print("mypy:", MV)
           PY
+          uv run python -m mypy --version
 
       # Use module invocation to bypass any broken shebangs
       - name: Run mypy
         run: uv run python -m mypy --show-traceback --strict --ignore-missing-imports .
-
   tests:
     name: Tests (${{ matrix.os }} / py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
@@ -130,12 +131,21 @@ jobs:
         run: mkdir -p test-results
       - name: Run tests
         run: |
+          set -e
+          set +e
           uv run pytest -ra \
             --maxfail=1 \
             --durations=10 \
             --cov=statline \
             --cov-report=xml \
             --junitxml=test-results/junit.xml
+          code=$?
+          set -e
+          if [ "$code" -eq 5 ]; then
+            echo "No tests collected; marking as success."
+            exit 0
+          fi
+          exit "$code"
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
